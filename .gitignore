@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+venv/
+.venv/
+
+# Logs
+*.log
+
+# Large AI artifacts
+*.safetensors
+*.ckpt
+*.pt
+*.bin
+*.onnx
+*.pth
+
+# Datasets / training data
+training_data/
+data/
+datasets/
+
+# ComfyUI and Kohya are cloned repos - exclude their .git internals
+ComfyUI/
+kohya_ss/
