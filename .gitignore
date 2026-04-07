@@ -1,26 +1,53 @@
-# Python
-__pycache__/
-*.pyc
-*.egg-info/
+# Virtual environments
 venv/
 .venv/
+env/
+ENV/
 
-# Logs
-*.log
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
 
-# Large AI artifacts
+# Model files (too large for git)
 *.safetensors
 *.ckpt
 *.pt
+*.pth
 *.bin
 *.onnx
-*.pth
+models/
 
-# Datasets / training data
-training_data/
-data/
-datasets/
+# Training data (too large for git)
+training_data/processed/
+training_data/raw/
+training_data/model_output/
+training_data/logs/
 
-# ComfyUI and Kohya are cloned repos - exclude their .git internals
+# ComfyUI and Kohya (separate git repos)
 ComfyUI/
 kohya_ss/
+
+# System files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.log
+
+# Outputs
+outputs/
+logs/
