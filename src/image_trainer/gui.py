@@ -1,8 +1,7 @@
 """Tkinter wizard for image_trainer.
 
-Top bar is a project browser (list / create / open projects that live under
-`~/Apps/image_trainer/projects/`). The rest of the window is a 5-step notebook:
-Settings, Import & Resize, Caption, Train, Generate.
+Top bar is a project browser. The rest of the window is a 6-step notebook:
+Settings → Import & Resize → Caption → Review → Train → Generate.
 
 All heavy work is dispatched to the `trainer` CLI in a subprocess; the Popen
 handle is stored on the instance so the GUI can send SIGINT for a real
@@ -21,12 +20,14 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Optional
 
 from .config import DEFAULT_PROJECTS_ROOT, Project, ProjectsRoot
+from .pipeline import insights, review as review_mod
 
 
 # ---------- subprocess runner ----------
@@ -137,20 +138,26 @@ class TrainerGUI:
         self.tab_settings = ttk.Frame(self.nb, padding=PAD)
         self.tab_prep = ttk.Frame(self.nb, padding=PAD)
         self.tab_caption = ttk.Frame(self.nb, padding=PAD)
+        self.tab_review = ttk.Frame(self.nb, padding=PAD)
         self.tab_train = ttk.Frame(self.nb, padding=PAD)
         self.tab_generate = ttk.Frame(self.nb, padding=PAD)
 
         self.nb.add(self.tab_settings, text="1. Settings")
         self.nb.add(self.tab_prep, text="2. Import & Resize")
         self.nb.add(self.tab_caption, text="3. Caption")
-        self.nb.add(self.tab_train, text="4. Train")
-        self.nb.add(self.tab_generate, text="5. Generate")
+        self.nb.add(self.tab_review, text="4. Review")
+        self.nb.add(self.tab_train, text="5. Train")
+        self.nb.add(self.tab_generate, text="6. Generate")
 
         self._build_settings_tab()
         self._build_prep_tab()
         self._build_caption_tab()
+        self._build_review_tab()
         self._build_train_tab()
         self._build_generate_tab()
+
+        # Refresh the Review tab whenever the user switches to it.
+        self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         log_frame = ttk.LabelFrame(self.root, text="Log", padding=PAD)
         log_frame.pack(fill="both", expand=True, padx=PAD, pady=(0, 0))
@@ -292,6 +299,113 @@ class TrainerGUI:
             row=2, column=0, sticky="w", pady=PAD
         )
 
+    def _build_review_tab(self) -> None:
+        f = self.tab_review
+        f.columnconfigure(0, weight=0)
+        f.columnconfigure(1, weight=1)
+        f.rowconfigure(1, weight=1)
+
+        # --- top bar: header + nav + counts ---
+        top = ttk.Frame(f)
+        top.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, PAD))
+        ttk.Label(top, text="Review & caption each image", style="Header.TLabel").pack(side="left")
+        self.review_counts_var = tk.StringVar(value="—")
+        ttk.Label(top, textvariable=self.review_counts_var, style="Status.TLabel").pack(side="right")
+
+        # --- left column: file list ---
+        left = ttk.Frame(f)
+        left.grid(row=1, column=0, sticky="nswe")
+        left.rowconfigure(0, weight=1)
+        self.review_list = tk.Listbox(left, width=22, activestyle="dotbox", exportselection=False)
+        self.review_list.grid(row=0, column=0, sticky="nswe")
+        lb_scroll = ttk.Scrollbar(left, orient="vertical", command=self.review_list.yview)
+        lb_scroll.grid(row=0, column=1, sticky="ns")
+        self.review_list.configure(yscrollcommand=lb_scroll.set)
+        self.review_list.bind("<<ListboxSelect>>", self._on_review_list_select)
+
+        list_btns = ttk.Frame(left)
+        list_btns.grid(row=1, column=0, columnspan=2, sticky="we", pady=(PAD, 0))
+        ttk.Button(list_btns, text="Reload", command=self._reload_review).pack(side="left")
+        ttk.Button(list_btns, text="Save", command=self._save_review).pack(side="left", padx=(PAD, 0))
+
+        # --- right column: image + editor ---
+        right = ttk.Frame(f)
+        right.grid(row=1, column=1, sticky="nswe", padx=(PAD, 0))
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+
+        # image preview
+        self.review_image_label = ttk.Label(right, anchor="center", relief="sunken", background="#111")
+        self.review_image_label.grid(row=0, column=0, sticky="we")
+
+        # caption editor + chips + info
+        editor = ttk.Frame(right)
+        editor.grid(row=1, column=0, sticky="nswe", pady=(PAD, 0))
+        editor.columnconfigure(1, weight=1)
+        editor.rowconfigure(2, weight=1)
+
+        self.review_include_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            editor, text="Include in training",
+            variable=self.review_include_var,
+            command=self._on_review_include_toggle,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        ttk.Label(editor, text="Caption:").grid(row=1, column=0, sticky="nw", pady=(PAD, 2))
+        self.review_caption_text = tk.Text(editor, height=4, wrap="word", font=("TkDefaultFont", 10))
+        self.review_caption_text.grid(row=1, column=1, rowspan=2, sticky="nswe", padx=(PAD, 0))
+        self.review_caption_text.bind("<FocusOut>", lambda _e: self._capture_current_editor())
+
+        # prompt chips
+        chips = ttk.LabelFrame(editor, text="Quick tags (click to append)", padding=PAD)
+        chips.grid(row=3, column=0, columnspan=2, sticky="we", pady=(PAD, 0))
+        self.review_chips_frame = chips
+        self._rebuild_chips([])
+
+        # per-image info
+        info = ttk.LabelFrame(editor, text="Image info", padding=PAD)
+        info.grid(row=4, column=0, columnspan=2, sticky="we", pady=(PAD, 0))
+        info.columnconfigure(1, weight=1)
+        self.review_info_var = tk.StringVar(value="—")
+        ttk.Label(info, textvariable=self.review_info_var, justify="left").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        self.review_dupes_var = tk.StringVar(value="")
+        ttk.Label(info, textvariable=self.review_dupes_var, foreground="#b08800", justify="left").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(2, 0)
+        )
+
+        # notes
+        ttk.Label(editor, text="Notes:").grid(row=5, column=0, sticky="nw", pady=(PAD, 2))
+        self.review_notes_entry = ttk.Entry(editor)
+        self.review_notes_entry.grid(row=5, column=1, sticky="we", padx=(PAD, 0), pady=(PAD, 2))
+
+        # nav
+        nav = ttk.Frame(right)
+        nav.grid(row=2, column=0, sticky="we", pady=(PAD, 0))
+        ttk.Button(nav, text="< Prev", command=lambda: self._review_step(-1)).pack(side="left")
+        ttk.Button(nav, text="Next >", command=lambda: self._review_step(+1)).pack(side="left", padx=(PAD // 2, 0))
+        ttk.Button(nav, text="Toggle include", command=self._toggle_review_include).pack(side="left", padx=(PAD, 0))
+        ttk.Label(
+            nav,
+            text="Shortcuts: ← → (nav), I (toggle include), Ctrl+S (save)",
+            style="Status.TLabel",
+        ).pack(side="right")
+
+        # Keyboard shortcuts on the tab frame.
+        f.bind_all("<Control-s>", lambda _e: self._save_review())
+
+        # state
+        self._review: Optional[review_mod.Review] = None
+        self._review_order: list[str] = []
+        self._review_idx: int = -1
+        # Ring buffer of recent PhotoImage refs. Single-slot caching leads to
+        # the previous image being GC'd mid-render under fast navigation, so
+        # we hold the last few.
+        self._review_photo_cache: list = []
+        self._review_dupes_index: dict[str, list[tuple[str, int]]] = {}
+        self._review_stats_index: dict[str, dict] = {}
+
     def _build_train_tab(self) -> None:
         f = self.tab_train
         f.columnconfigure(0, weight=1)
@@ -308,8 +422,16 @@ class TrainerGUI:
             justify="left",
         ).grid(row=1, column=0, columnspan=4, sticky="w")
 
+        note_row = ttk.Frame(f)
+        note_row.grid(row=2, column=0, columnspan=4, sticky="we", pady=(PAD, 0))
+        ttk.Label(note_row, text="Journal note:").pack(side="left")
+        self.train_note_var = tk.StringVar()
+        ttk.Entry(note_row, textvariable=self.train_note_var).pack(
+            side="left", fill="x", expand=True, padx=(PAD, 0)
+        )
+
         bar_frame = ttk.Frame(f)
-        bar_frame.grid(row=2, column=0, columnspan=4, sticky="we", pady=(PAD * 2, PAD // 2))
+        bar_frame.grid(row=3, column=0, columnspan=4, sticky="we", pady=(PAD * 2, PAD // 2))
         bar_frame.columnconfigure(0, weight=1)
         self.train_progress = ttk.Progressbar(
             bar_frame, length=600, mode="determinate",
@@ -323,17 +445,17 @@ class TrainerGUI:
 
         self.train_status_var = tk.StringVar(value="idle")
         ttk.Label(f, textvariable=self.train_status_var, style="Status.TLabel").grid(
-            row=3, column=0, columnspan=4, sticky="w"
+            row=4, column=0, columnspan=4, sticky="w"
         )
 
         btns = ttk.Frame(f)
-        btns.grid(row=4, column=0, columnspan=4, sticky="w", pady=PAD)
+        btns.grid(row=5, column=0, columnspan=4, sticky="w", pady=PAD)
         ttk.Button(btns, text="Start training", command=self._on_train).pack(side="left")
         ttk.Button(btns, text="Resume training", command=self._on_train_resume).pack(side="left", padx=PAD)
         ttk.Button(btns, text="Stop (graceful)", command=self._on_train_stop).pack(side="left")
 
         ttk.Button(f, text="Open validation previews", command=self._open_validation_dir).grid(
-            row=5, column=0, sticky="w", pady=PAD
+            row=6, column=0, sticky="w", pady=PAD
         )
 
     def _build_generate_tab(self) -> None:
@@ -437,6 +559,11 @@ class TrainerGUI:
         self.validation_steps_var.set(str(project.validation_steps))
         self.xformers_var.set(project.use_xformers)
         self.te_lora_var.set(project.train_text_encoder)
+        # Generate tab defaults also come from the project so they persist per LoRA.
+        if not self.negative_var.get().strip():
+            self.negative_var.set(project.default_negative_prompt)
+        # Invalidate the Review tab state so it rebuilds for this project.
+        self._review = None
 
     def _save_settings(self) -> None:
         if not self.current_project:
@@ -461,6 +588,235 @@ class TrainerGUI:
             return
         p.save()
         self.status_var.set(f"settings saved to {p.config_path.name}")
+
+    # ---- review tab ----
+
+    def _focus_is_text_input(self) -> bool:
+        """True when the user is typing in the caption or notes widget; we
+        must not let Review shortcuts (←/→/I) steal those keystrokes."""
+        try:
+            w = self.root.focus_get()
+        except Exception:
+            return False
+        return isinstance(w, (tk.Text, tk.Entry, ttk.Entry, ttk.Combobox))
+
+    def _kbd(self, action):
+        def handler(_event=None):
+            if self._focus_is_text_input():
+                return  # let the widget handle the key
+            action()
+        return handler
+
+    def _on_tab_changed(self, _event) -> None:
+        selected = self.nb.select()
+        if selected == str(self.tab_review) and self.current_project is not None:
+            # Load once when switching in; preserve edits if already loaded.
+            if self._review is None:
+                self._reload_review()
+            else:
+                self._refresh_review_list_ui()
+
+        # Bind nav + toggle only while the Review tab is active, and guard
+        # against firing when focus is inside the caption / notes widgets.
+        if selected == str(self.tab_review):
+            self.root.bind("<Left>", self._kbd(lambda: self._review_step(-1)))
+            self.root.bind("<Right>", self._kbd(lambda: self._review_step(+1)))
+            self.root.bind("<i>", self._kbd(self._toggle_review_include))
+            self.root.bind("<I>", self._kbd(self._toggle_review_include))
+        else:
+            for key in ("<Left>", "<Right>", "<i>", "<I>"):
+                try:
+                    self.root.unbind(key)
+                except Exception:
+                    pass
+
+    def _reload_review(self) -> None:
+        if not self.current_project:
+            messagebox.showerror("No project", "Create or open a project first.")
+            return
+        project = self.current_project
+        self._review = review_mod.load(project)
+        self._review_order = sorted(self._review.entries.keys())
+        if not self._review_order:
+            self.review_counts_var.set("no processed images yet")
+            self.review_image_label.configure(image="", text="(run prep first)")
+            self._review_idx = -1
+            self.review_list.delete(0, "end")
+            return
+
+        # Pre-compute per-image stats + hashes in one pass (one file-open per
+        # image), then derive near-duplicate pairs from the cached hashes.
+        pngs = [project.processed_dir / f"{s}.png" for s in self._review_order]
+        self._review_stats_index = {}
+        hashes: list[tuple[str, int]] = []
+        for p in pngs:
+            st, h = insights.stats_and_hash(p)
+            self._review_stats_index[p.stem] = st
+            hashes.append((p.stem, h))
+        self._review_dupes_index = {}
+        for i in range(len(hashes)):
+            stem_i, h_i = hashes[i]
+            for j in range(i + 1, len(hashes)):
+                stem_j, h_j = hashes[j]
+                d = insights.hamming(h_i, h_j)
+                if d <= 6:
+                    self._review_dupes_index.setdefault(stem_i, []).append((stem_j, d))
+                    self._review_dupes_index.setdefault(stem_j, []).append((stem_i, d))
+
+        self._refresh_review_list_ui()
+        self._review_idx = 0
+        self._render_review_entry()
+
+    def _refresh_review_list_ui(self) -> None:
+        self.review_list.delete(0, "end")
+        for stem in self._review_order:
+            entry = self._review.entries[stem]
+            mark = "✓" if entry.include else "✗"
+            self.review_list.insert("end", f"{mark} {stem}")
+        counts = f"{self._review.included_count()} in / {self._review.excluded_count()} out of {len(self._review_order)}"
+        self.review_counts_var.set(counts)
+        self._rebuild_chips(self.current_project.prompt_chips if self.current_project else [])
+
+    def _rebuild_chips(self, chips: list) -> None:
+        for w in self.review_chips_frame.winfo_children():
+            w.destroy()
+        if not chips:
+            ttk.Label(self.review_chips_frame, text="(no chips configured)").pack(anchor="w")
+            return
+        # Wrap chips into rows of ~6.
+        row = None
+        for i, chip in enumerate(chips):
+            if i % 6 == 0:
+                row = ttk.Frame(self.review_chips_frame)
+                row.pack(fill="x")
+            ttk.Button(row, text=chip, command=lambda c=chip: self._append_chip(c)).pack(
+                side="left", padx=(0, 4), pady=2
+            )
+
+    def _on_review_list_select(self, _event) -> None:
+        sel = self.review_list.curselection()
+        if not sel:
+            return
+        new_idx = sel[0]
+        if new_idx == self._review_idx:
+            return
+        self._capture_current_editor()
+        self._review_idx = new_idx
+        self._render_review_entry()
+
+    def _review_step(self, delta: int) -> None:
+        if self._review is None or not self._review_order:
+            return
+        self._capture_current_editor()
+        self._review_idx = max(0, min(len(self._review_order) - 1, self._review_idx + delta))
+        self.review_list.selection_clear(0, "end")
+        self.review_list.selection_set(self._review_idx)
+        self.review_list.see(self._review_idx)
+        self._render_review_entry()
+
+    def _current_stem(self) -> Optional[str]:
+        if 0 <= self._review_idx < len(self._review_order):
+            return self._review_order[self._review_idx]
+        return None
+
+    def _render_review_entry(self) -> None:
+        stem = self._current_stem()
+        if not stem or self.current_project is None or self._review is None:
+            return
+        entry = self._review.entries[stem]
+
+        # image preview
+        png_path = self.current_project.processed_dir / f"{stem}.png"
+        self._show_preview(png_path)
+
+        # caption / include / notes
+        self.review_include_var.set(entry.include)
+        self.review_caption_text.delete("1.0", "end")
+        self.review_caption_text.insert("1.0", entry.caption)
+        self.review_notes_entry.delete(0, "end")
+        self.review_notes_entry.insert(0, entry.notes)
+
+        # info
+        stats = self._review_stats_index.get(stem, {})
+        info_bits = [f"{stem}.png"]
+        if stats:
+            info_bits.append(f"{stats['width']}×{stats['height']}")
+            info_bits.append(f"brightness {stats['brightness']}")
+            info_bits.append(f"sharpness {stats['sharpness']}")
+        if stats:
+            warn = insights.resolution_warning(stats["width"], stats["height"], self.current_project.resolution)
+            if warn:
+                info_bits.append(f"⚠ {warn}")
+        self.review_info_var.set("   |   ".join(info_bits))
+
+        dupes = self._review_dupes_index.get(stem, [])
+        if dupes:
+            text = "near-duplicates: " + ", ".join(f"{s} (d={d})" for s, d in dupes[:5])
+            self.review_dupes_var.set(text)
+        else:
+            self.review_dupes_var.set("")
+
+    def _show_preview(self, png_path: Path, max_side: int = 520) -> None:
+        from PIL import Image, ImageTk
+
+        try:
+            img = Image.open(png_path).convert("RGB")
+        except Exception as e:
+            self.review_image_label.configure(image="", text=f"(failed to open: {e})")
+            return
+        w, h = img.size
+        scale = max_side / max(w, h)
+        if scale < 1:
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(img)
+        self._review_photo_cache.append(photo)
+        # Keep the last few; lets us navigate fast without Tk GC-ing a
+        # still-rendering image.
+        if len(self._review_photo_cache) > 4:
+            self._review_photo_cache = self._review_photo_cache[-4:]
+        self.review_image_label.configure(image=photo, text="")
+
+    def _capture_current_editor(self) -> None:
+        """Flush the caption / include / notes widgets back into the in-memory
+        Review object. Called before navigation and before save."""
+        stem = self._current_stem()
+        if not stem or self._review is None:
+            return
+        entry = self._review.entries[stem]
+        entry.include = bool(self.review_include_var.get())
+        entry.caption = self.review_caption_text.get("1.0", "end").strip()
+        entry.notes = self.review_notes_entry.get().strip()
+        # reflect include/exclude tick in the list row
+        mark = "✓" if entry.include else "✗"
+        self.review_list.delete(self._review_idx)
+        self.review_list.insert(self._review_idx, f"{mark} {stem}")
+        self.review_list.selection_clear(0, "end")
+        self.review_list.selection_set(self._review_idx)
+        counts = f"{self._review.included_count()} in / {self._review.excluded_count()} out of {len(self._review_order)}"
+        self.review_counts_var.set(counts)
+
+    def _on_review_include_toggle(self) -> None:
+        self._capture_current_editor()
+
+    def _toggle_review_include(self) -> None:
+        self.review_include_var.set(not self.review_include_var.get())
+        self._capture_current_editor()
+
+    def _append_chip(self, chip: str) -> None:
+        current = self.review_caption_text.get("1.0", "end").strip()
+        new = review_mod.append_chip(current, chip)
+        self.review_caption_text.delete("1.0", "end")
+        self.review_caption_text.insert("1.0", new)
+        self._capture_current_editor()
+
+    def _save_review(self) -> None:
+        if not self.current_project or self._review is None:
+            messagebox.showerror("Nothing to save", "Reload the Review tab first.")
+            return
+        self._capture_current_editor()
+        path = review_mod.save(self.current_project, self._review)
+        self.status_var.set(f"review saved to {path.name}")
+        self.log_queue.put(f"[review saved: {path}]\n")
 
     # ---- pickers / open folder ----
 
@@ -534,6 +890,9 @@ class TrainerGUI:
             base = self.base_model_var.get().strip()
             if base:
                 args += ["--base", base]
+        note = self.train_note_var.get().strip()
+        if note:
+            args += ["--note", note]
         return args
 
     def _on_train(self) -> None:
@@ -649,9 +1008,40 @@ def _open_folder(path: Path) -> None:
         os.startfile(str(path))  # type: ignore[attr-defined]
 
 
-def launch() -> None:
+_TAB_INDEX = {
+    "settings": 0, "prep": 1, "caption": 2, "review": 3, "train": 4, "generate": 5,
+}
+
+
+def launch(
+    initial_project_dir: Optional[Path] = None,
+    initial_tab: Optional[str] = None,
+) -> None:
     root = tk.Tk()
-    TrainerGUI(root)
+    gui = TrainerGUI(root)
+
+    if initial_project_dir is not None:
+        try:
+            project = Project.load(initial_project_dir)
+        except Exception as e:
+            gui.log_queue.put(f"[Could not open {initial_project_dir}: {e}]\n")
+        else:
+            # If the project is outside the default ProjectsRoot, re-point the
+            # browser at its parent so the combobox shows the right thing
+            # instead of a stale list from the default root.
+            parent = project.root.parent
+            if parent != gui.projects_root.root:
+                gui.projects_root = ProjectsRoot(parent)
+                gui.projects_root_var.set(str(parent))
+            gui.current_project = project
+            gui._load_settings_into_ui(project)
+            gui._refresh_project_list()
+            gui.project_combo.set(project.root.name)
+            gui.log_queue.put(f"[Opened project via CLI: {project.root}]\n")
+
+    if initial_tab and initial_tab in _TAB_INDEX:
+        root.after(300, lambda: gui.nb.select(_TAB_INDEX[initial_tab]))
+
     root.mainloop()
 
 

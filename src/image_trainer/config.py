@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -65,6 +65,29 @@ class Project:
     validation_steps: int = 200  # 0 disables validation previews
     validation_prompt: str = ""  # falls back to f"{trigger_word}, portrait, studio lighting"
     seed: int = 42
+
+    # generation defaults (Review + Generate tabs)
+    default_negative_prompt: str = (
+        "low quality, blurry, deformed, extra fingers, bad anatomy, watermark"
+    )
+    # Quick-insert tags the Review tab chips bar exposes. Click a chip in the
+    # GUI and the token is appended to the current image's caption. Edit this
+    # list per project to taste.
+    prompt_chips: list = field(
+        default_factory=lambda: [
+            "closeup",
+            "half body",
+            "full body",
+            "portrait",
+            "natural light",
+            "studio light",
+            "outdoor",
+            "indoor",
+            "front view",
+            "side view",
+            "three quarter view",
+        ]
+    )
 
     # runtime
     vram_profile: VramProfile = "10gb"

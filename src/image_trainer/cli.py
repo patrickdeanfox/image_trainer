@@ -98,7 +98,12 @@ def _cmd_train(args: argparse.Namespace) -> None:
         changed = True
     if changed:
         project.save()
-    train_lora(project, resume=args.resume, max_steps_override=args.max_steps)
+    train_lora(
+        project,
+        resume=args.resume,
+        max_steps_override=args.max_steps,
+        note=args.note or "",
+    )
 
 
 def _cmd_generate(args: argparse.Namespace) -> None:
@@ -116,10 +121,32 @@ def _cmd_generate(args: argparse.Namespace) -> None:
     )
 
 
-def _cmd_gui(_args: argparse.Namespace) -> None:
+def _cmd_gui(args: argparse.Namespace) -> None:
     from .gui import launch
 
-    launch()
+    initial_tab = getattr(args, "tab", None)
+    project_dir = getattr(args, "project_dir", None)
+    launch(
+        initial_project_dir=Path(project_dir).expanduser().resolve() if project_dir else None,
+        initial_tab=initial_tab,
+    )
+
+
+def _cmd_review(args: argparse.Namespace) -> None:
+    from .gui import launch
+
+    launch(
+        initial_project_dir=_resolve_project_dir(args.project_dir),
+        initial_tab="review",
+    )
+
+
+def _cmd_review_summary(args: argparse.Namespace) -> None:
+    from .pipeline import review as review_mod
+
+    project = Project.load(_resolve_project_dir(args.project_dir))
+    s = review_mod.summary(project)
+    print(f"total={s['total']} included={s['included']} excluded={s['excluded']}")
 
 
 def _cmd_list(_args: argparse.Namespace) -> None:
@@ -157,6 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--rank", type=int, default=None)
     sp.add_argument("--resolution", type=int, default=None)
     sp.add_argument("--grad-accum", type=int, default=None)
+    sp.add_argument("--note", default=None, help="Short note appended to logs/journal.txt for this run.")
     sp.set_defaults(func=_cmd_train)
 
     sp = sub.add_parser("generate", help="Generate images with base + trained LoRA.")
@@ -171,6 +199,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("gui", help="Launch the Tkinter wizard.")
     sp.set_defaults(func=_cmd_gui)
+
+    sp = sub.add_parser(
+        "review", help="Launch the GUI focused on the Review tab for a project."
+    )
+    sp.add_argument("project_dir")
+    sp.set_defaults(func=_cmd_review)
+
+    sp = sub.add_parser(
+        "review-summary",
+        help="Print how many processed images are marked include/exclude.",
+    )
+    sp.add_argument("project_dir")
+    sp.set_defaults(func=_cmd_review_summary)
 
     sp = sub.add_parser("list", help="List projects under the default projects root.")
     sp.set_defaults(func=_cmd_list)

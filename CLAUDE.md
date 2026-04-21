@@ -13,12 +13,14 @@ The primary hardware target is **10 GB VRAM / 16 GB RAM / 20 GB swap**, with ove
 ```
 src/image_trainer/
   config.py            # Project dataclass (per-project config.json) + ProjectsRoot helper
-  cli.py               # `trainer {init,prep,caption,train,generate,gui,list}`
-  gui.py               # Tkinter wizard: project browser + 5-step notebook
+  cli.py               # `trainer {init,prep,caption,review,review-summary,train,generate,gui,list}`
+  gui.py               # Tkinter wizard: project browser + 6-step notebook
   pipeline/
     ingest.py          # copy supported images from a source folder into project/raw/
     resize.py          # scale shortest side -> 1024, center-crop, write NNNN.png
     caption.py         # BLIP-large, prepend trigger word, write sibling .txt files
+    review.py          # pre-training review model (include/caption/notes per image)
+    insights.py        # PIL-only image-quality helpers (stats, near-dup perceptual hash)
     train.py           # SDXL LoRA training loop (quality + overnight hardening)
     generate.py        # load base + LoRA, run inference, save under outputs/<ts>/
 scripts/
@@ -27,21 +29,22 @@ scripts/
 ```
 
 Per-project data lives **outside the repo**, one directory per LoRA run. `Project.root` is the only path the user supplies; every other path is derived:
-`raw/`, `processed/`, `cache/`, `checkpoints/`, `lora/`, `outputs/`, `logs/`, `logs/validation/`, `config.json`.
+`raw/`, `processed/`, `cache/`, `checkpoints/`, `lora/`, `outputs/`, `logs/`, `logs/validation/`, `logs/journal.txt`, `config.json`, `review.json`.
 
 The default **projects root** is `~/Apps/image_trainer/projects/` (see `DEFAULT_PROJECTS_ROOT` in `config.py`). The CLI resolves a bare name like `me` against that root; an absolute path is taken verbatim.
 
 ## Pipeline
 
-Five steps, strictly ordered, each reachable through both CLI and GUI:
+Six steps, strictly ordered, each reachable through both CLI and GUI:
 
 1. `trainer init <project_dir_or_name> [--trigger-word X] [--base <sdxl.safetensors>] [--rank N] [--resolution N]` — create the folder layout and `config.json`.
-2. `trainer prep <project> [--source <folder>]` — optional ingest from a source folder, then resize to `target_size` PNGs (`0000.png`, `0001.png`, …).
-3. `trainer caption <project>` — BLIP captions, prepended with `trigger_word`, written as sibling `.txt` files. **Requires CUDA.**
-4. `trainer train <project> [--resume] [--max-steps N] [--rank N] [--resolution N] [--grad-accum N]` — LoRA training.
-5. `trainer generate <project> --prompt "..." [--n 4] [--steps 30] [--guidance 7] [--seed N]` — base + LoRA inference.
+2. `trainer prep <project> [--source <folder>]` — optional ingest, then resize to `target_size` PNGs (`0000.png`, `0001.png`, …).
+3. `trainer caption <project>` — BLIP captions prepended with `trigger_word`, written as sibling `.txt` files. **Requires CUDA.**
+4. `trainer review <project>` — launches the GUI focused on the **Review** tab so you can include/exclude, edit the caption, and use quick-tag chips per image. Persists to `review.json`; `trainer review-summary <project>` prints counts for CI.
+5. `trainer train <project> [--resume] [--max-steps N] [--rank N] [--resolution N] [--grad-accum N] [--note "..."]` — LoRA training. Training reads `review.json` and **only trains on `include=True` stems**.
+6. `trainer generate <project> --prompt "..." [--n 4] [--steps 30] [--guidance 7] [--seed N]` — base + LoRA inference.
 
-Plus `trainer gui` (launch wizard) and `trainer list` (print projects).
+Plus `trainer gui` (launch wizard), `trainer list` (print projects), and `trainer review-summary` (print include/exclude counts).
 
 Filenames are positional: `caption.py` writes `img_path.with_suffix(".txt")`, so a `.png` and its `.txt` pair by sharing a stem. Don't rename one without the other.
 
@@ -93,6 +96,18 @@ If you add a new pipeline step, add it in this order: module under `pipeline/` �
 ### OOM knobs exposed in the GUI
 
 Curated set, per user directive: **resolution**, **LoRA rank**, **gradient accumulation**, **xformers on/off**, **text-encoder LoRA on/off** (UI disabled until TE LoRA is actually supported end-to-end). Power-user knobs (`mixed_precision`, `use_8bit_optim`, `min_snr_gamma`, `offset_noise`, `learning_rate`, `lr_scheduler`, `lr_warmup_steps`) stay in `config.json` only — editing that file is the documented escape hatch.
+
+### Review tab
+
+Owned by `pipeline/review.py`. `review.json` at the project root is the single source of truth for per-image `{include, caption, notes}`. `review.load(project)` is lenient: if no `review.json` exists, every processed image is seeded with `include=True` and the caption pulled from its `.txt`. `review.save(project, review)` writes `review.json` and **re-writes each stem's `.txt` from the edited caption** (deleting `.txt` for excluded stems belt-and-suspenders). Training then keeps reading `.txt` as before — the review layer is transparent to the training loop, which additionally filters to only `include=True` stems in `_cache_embeddings_and_latents`.
+
+`pipeline/insights.py` is PIL-only (no torch, no OpenCV): `image_stats`, `average_hash` + `hamming` for near-duplicate pairs, and `resolution_warning`. The GUI calls `find_near_duplicates` once on Review-tab reload and indexes results per stem; O(n²) is fine for personal datasets (<500 images).
+
+`Project.prompt_chips` is a per-project editable list of quick-insert tokens for the Review tab. `append_chip(caption, chip)` (in `review.py`) adds to a comma-separated caption without duplicating.
+
+### Training journal
+
+`train.append_journal(project, note, extra)` appends one line per run to `logs/journal.txt`. The Train tab has a "Journal note" field that feeds `--note` to the CLI.
 
 ## `Project` config lifecycle
 

@@ -50,6 +50,27 @@ ProgressCb = Callable[[int, int], None]
 _CACHE_MARKER = "cache_marker.json"
 
 
+def append_journal(project: Project, note: str, extra: Optional[dict] = None) -> None:
+    """Append a single-line entry to `logs/journal.txt` so users can keep a
+    record of what they tried and what worked."""
+    project.ensure_dirs()
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    bits = [
+        f"[{ts}]",
+        f"rank={project.lora_rank}",
+        f"res={project.resolution}",
+        f"lr={project.learning_rate}",
+        f"steps={project.max_train_steps}",
+    ]
+    if extra:
+        for k, v in extra.items():
+            bits.append(f"{k}={v}")
+    if note:
+        bits.append(f"note={note!r}")
+    line = " ".join(bits) + "\n"
+    (project.logs_dir / "journal.txt").open("a").write(line)
+
+
 # ---------- tee logging ----------
 
 class _Tee:
@@ -134,15 +155,32 @@ def _cache_embeddings_and_latents(project: Project, pipe, device: str = "cuda") 
     from PIL import Image
     from torchvision import transforms
 
+    from . import review as review_mod
+
     _validate_or_reset_cache(project)
     (project.cache_dir / "latents").mkdir(parents=True, exist_ok=True)
     (project.cache_dir / "embeds").mkdir(parents=True, exist_ok=True)
 
-    pngs = sorted(project.processed_dir.glob("*.png"))
-    if not pngs:
+    all_pngs = sorted(project.processed_dir.glob("*.png"))
+    if not all_pngs:
         raise RuntimeError(
             f"No .png files in {project.processed_dir}. Run prep + caption first."
         )
+
+    # Honor the pre-training review: only train on images marked include=True.
+    # If review.json doesn't exist, load() seeds everything as included, so
+    # projects that skipped the Review tab still train on everything.
+    review = review_mod.load(project)
+    included = set(review.stems_for_training())
+    pngs = [p for p in all_pngs if p.stem in included]
+    if not pngs:
+        raise RuntimeError(
+            f"Review excluded every image in {project.processed_dir}. "
+            f"Open the Review tab and mark some as included."
+        )
+    excluded = len(all_pngs) - len(pngs)
+    if excluded > 0:
+        print(f"Review: training on {len(pngs)}/{len(all_pngs)} images ({excluded} excluded).", flush=True)
 
     image_tf = transforms.Compose(
         [
@@ -305,6 +343,7 @@ def train_lora(
     resume: bool = False,
     max_steps_override: Optional[int] = None,
     progress_cb: Optional[ProgressCb] = None,
+    note: str = "",
 ) -> Path:
     """Run LoRA training. Returns the path to the exported LoRA directory."""
     import torch
@@ -335,6 +374,7 @@ def train_lora(
 
     project.ensure_dirs()
     log_path = project.logs_dir / f"training_{int(time.time())}.log"
+    append_journal(project, note, extra={"resume": int(bool(resume))})
 
     with _tee_stdout(log_path):
         print(f"=== training start, logging to {log_path} ===", flush=True)

@@ -40,13 +40,19 @@ trainer prep me --source ~/Pictures/me_dataset
 # 3. Auto-caption with BLIP.
 trainer caption me
 
-# 4. Train overnight (Ctrl+C is safe — saves a checkpoint and exits).
-trainer train me --max-steps 1500
+# 4. Review each image: pick which to include, edit captions, add quick tags.
+#    This opens the GUI focused on the Review tab. Persists to review.json.
+trainer review me
+#    (optional: print counts for scripting)
+trainer review-summary me
+
+# 5. Train overnight (Ctrl+C is safe — saves a checkpoint and exits).
+trainer train me --max-steps 1500 --note "rank 32, first pass"
 
 #    Next morning, continue from the last checkpoint:
 trainer train me --resume
 
-# 5. Generate images.
+# 6. Generate images.
 trainer generate me \
   --prompt "ohwx person, soft window light, 35mm photo" \
   --n 4
@@ -62,13 +68,14 @@ trainer generate me \
 trainer gui
 ```
 
-The wizard has a **project browser** at the top (create / switch / refresh) and five step tabs:
+The wizard has a **project browser** at the top (create / switch / refresh) and six step tabs:
 
 1. **Settings** — trigger word, base checkpoint, and the curated OOM / quality knobs: **resolution**, **LoRA rank**, **gradient accumulation**, **xformers on/off**, **text-encoder LoRA on/off**, plus training length + checkpoint frequency + validation frequency.
 2. **Import & Resize** — pick a source folder, run the copy + resize.
 3. **Caption** — run BLIP.
-4. **Train** — Start / Resume / Stop (graceful), live progress bar, shortcut to open the `validation/` folder so you can watch quality trend over the night.
-5. **Generate** — prompt, negative, N, steps, guidance, seed, and an "Open outputs folder" button.
+4. **Review** — step through each processed image: include/exclude toggle, editable caption, quick-tag chips, per-image resolution/brightness/sharpness stats, and near-duplicate warnings. Keyboard: `←`/`→` navigate, `I` toggle include, `Ctrl+S` save. Training only uses `include=True` images.
+5. **Train** — Start / Resume / Stop (graceful), live progress bar, optional journal note, shortcut to open the `validation/` folder so you can watch quality trend over the night.
+6. **Generate** — prompt, negative (pre-filled from `default_negative_prompt`), N, steps, guidance, seed, and an "Open outputs folder" button.
 
 All heavy work is run through the CLI subprocess, so anything you can do in the GUI you can script.
 
@@ -78,7 +85,8 @@ All heavy work is run through the CLI subprocess, so anything you can do in the 
 
 ```
 ~/Apps/image_trainer/projects/me/
-  config.json         # single source of truth for settings
+  config.json         # settings
+  review.json         # per-image include/caption/notes (Review tab)
   raw/                # your source images
   processed/          # 1024x1024 PNGs + paired .txt captions
   cache/              # pre-computed VAE latents + text embeddings (huge VRAM save)
@@ -87,6 +95,7 @@ All heavy work is run through the CLI subprocess, so anything you can do in the 
   outputs/            # generated images, grouped by timestamp
   logs/
     training_<ts>.log # tee'd stdout from each training run
+    journal.txt       # one line per training run (rank, res, lr, note, ...)
     validation/       # validation_step_000200.png, ... (quality progression)
 ```
 
