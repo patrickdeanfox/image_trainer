@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image_trainer"
+version = "0.1.0"
+description = "Local end-to-end pipeline for training a personal-likeness LoRA (SDXL) and generating images."
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "torchvision",
+    "Pillow",
+    "transformers",
+    "diffusers>=0.27",
+    "peft>=0.10",
+    "accelerate",
+    "safetensors",
+    "bitsandbytes",
+]
+
+[project.optional-dependencies]
+xformers = ["xformers"]
+
+[project.scripts]
+trainer = "image_trainer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
