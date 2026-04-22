@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image_trainer"
+version = "0.1.0"
+description = "Local end-to-end pipeline for training a personal-likeness LoRA (SDXL) and generating images."
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "torchvision",
+    "Pillow",
+    "transformers",
+    "diffusers>=0.27",
+    "peft>=0.10",
+    "accelerate",
+    "safetensors",
+    "bitsandbytes",
+]
+
+[project.optional-dependencies]
+xformers = ["xformers"]
+# WD14 NSFW-aware captioner. `onnxruntime` for CPU, `onnxruntime-gpu` for CUDA.
+# huggingface_hub downloads the model weights + tag CSV on first use.
+wd14 = ["onnxruntime", "huggingface_hub"]
+
+[project.scripts]
+trainer = "image_trainer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

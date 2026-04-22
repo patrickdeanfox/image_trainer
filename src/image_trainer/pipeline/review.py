@@ -1,0 +1,148 @@
+"""Pre-training image review.
+
+One source of truth per project: `<project>/review.json` maps image stem →
+{include, caption, notes}. The `.txt` caption file next to each processed
+image is regenerated from this on save, so the training loop keeps reading
+`<stem>.txt` exactly as before and doesn't need to know the review exists.
+
+`load` is lenient: if an image has no review entry, it's seeded from the
+existing `.txt` (or the trigger word if the .txt is missing) and defaults to
+`include=True`. That means you can run prep + caption once, skim through the
+Review tab, and training will skip whatever you marked off.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Optional
+
+from ..config import Project
+
+REVIEW_FILENAME = "review.json"
+
+
+@dataclass
+class ReviewEntry:
+    stem: str
+    include: bool = True
+    caption: str = ""
+    notes: str = ""
+
+
+@dataclass
+class Review:
+    entries: dict[str, ReviewEntry] = field(default_factory=dict)
+
+    def stems_for_training(self) -> list[str]:
+        return sorted(s for s, e in self.entries.items() if e.include)
+
+    def included_count(self) -> int:
+        return sum(1 for e in self.entries.values() if e.include)
+
+    def excluded_count(self) -> int:
+        return sum(1 for e in self.entries.values() if not e.include)
+
+
+def _review_path(project: Project) -> Path:
+    return project.root / REVIEW_FILENAME
+
+
+def _default_caption(project: Project, stem: str, txt_path: Path) -> str:
+    if txt_path.exists():
+        return txt_path.read_text().strip()
+    return project.trigger_word
+
+
+def load(project: Project) -> Review:
+    """Load review state, seeding entries for any image not yet reviewed.
+    Drops entries whose PNG no longer exists so training never uses stale
+    references."""
+    review = Review()
+    path = _review_path(project)
+    if path.exists():
+        try:
+            blob = json.loads(path.read_text())
+            for stem, raw in blob.items():
+                review.entries[stem] = ReviewEntry(
+                    stem=stem,
+                    include=bool(raw.get("include", True)),
+                    caption=str(raw.get("caption", "")),
+                    notes=str(raw.get("notes", "")),
+                )
+        except Exception:
+            # Corrupt or hand-edited -> ignore and rebuild from disk.
+            pass
+
+    png_stems = {p.stem for p in project.processed_dir.glob("*.png")}
+
+    # Drop review entries whose image was deleted.
+    orphaned = [s for s in review.entries if s not in png_stems]
+    for s in orphaned:
+        del review.entries[s]
+
+    # Seed any missing entries from the processed folder.
+    for png in sorted(project.processed_dir.glob("*.png")):
+        if png.stem in review.entries:
+            # If caption is blank, pull from .txt as a fallback.
+            if not review.entries[png.stem].caption:
+                review.entries[png.stem].caption = _default_caption(
+                    project, png.stem, png.with_suffix(".txt")
+                )
+            continue
+        review.entries[png.stem] = ReviewEntry(
+            stem=png.stem,
+            include=True,
+            caption=_default_caption(project, png.stem, png.with_suffix(".txt")),
+            notes="",
+        )
+
+    return review
+
+
+def save(project: Project, review: Review) -> Path:
+    """Persist review.json and sync each entry's caption to its .txt sibling
+    so the training loop's existing caption-reading code keeps working."""
+    project.ensure_dirs()
+    # Write review.json
+    blob = {stem: asdict(entry) for stem, entry in review.entries.items()}
+    # Trim dataclass 'stem' redundancy in serialized form.
+    for v in blob.values():
+        v.pop("stem", None)
+    _review_path(project).write_text(json.dumps(blob, indent=2))
+
+    # Mirror captions to .txt files (only for included images, so excluded
+    # ones don't accidentally get picked up if someone bypasses the review
+    # filter).
+    for stem, entry in review.entries.items():
+        txt_path = project.processed_dir / f"{stem}.txt"
+        if entry.include and entry.caption:
+            txt_path.write_text(entry.caption)
+        else:
+            # Remove stale .txt if the image is excluded — belt-and-suspenders.
+            try:
+                if txt_path.exists():
+                    txt_path.unlink()
+            except OSError:
+                pass
+    return _review_path(project)
+
+
+def summary(project: Project) -> dict:
+    r = load(project)
+    return {
+        "total": len(r.entries),
+        "included": r.included_count(),
+        "excluded": r.excluded_count(),
+    }
+
+
+def append_chip(caption: str, chip: str) -> str:
+    """Append a chip token to a caption, keeping the comma-separated format
+    and avoiding obvious duplicates."""
+    existing = [t.strip() for t in caption.split(",") if t.strip()]
+    if chip in existing:
+        return caption
+    existing.append(chip)
+    return ", ".join(existing)
