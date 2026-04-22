@@ -72,13 +72,39 @@ trainer generate me \
 
 `trainer gui` launches the wizard on the same commands. `trainer list` prints every project under `~/Apps/image_trainer/projects/`.
 
+### Dry-run prep
+
+`trainer prep me --dry-run` writes 256px previews to `<project>/preview/` instead of full-resolution PNGs to `processed/`. Face-aware crop decisions run the same way, so you can audit which images will be flagged "no face detected" before committing to a real prep. Nothing is touched in `processed/` or `review.json`. The Ingest tab exposes this as a **DRY-RUN PREVIEW** button next to **IMPORT & RESIZE**.
+
 ## GUI
 
 Six-tab notebook, one tab per pipeline step: **Settings → Ingest → Caption → Review → Train → Generate**. The GUI owns no ML logic — every action spawns `python -m image_trainer.cli <args>` and tails its stdout into the log pane.
 
-Review tab keyboard shortcuts: **←/→** prev/next, **I** toggle include, **Ctrl+S** save.
+### Header strip
 
-Train tab: Start / Resume / Stop (graceful). The Stop button sends SIGINT; training finishes its current step, writes a checkpoint, and exits. Links to `logs/`, latest `training_*.log`, `journal.txt`, and `logs/validation/`.
+Single compact row at the top: title, project combo, **NEW…**, **REFRESH**, **RECENT ▾** (MRU list of the last eight projects you opened), **ROOT…** (change the projects root), a status label, and six colour-coded status dots — one per pipeline step — that track whether that step has been run, partially run, or is clean (derived from disk state: `processed/*.png`, `.txt` pair counts, `review.json`, `checkpoints/`, `lora/unet/`, `outputs/`). Each notebook tab also carries a live badge — e.g. `02 · INGEST · 187 imgs`, `03 · CAPTION · 140/187`, `05 · TRAIN · ckpt(3)`, `06 · GENERATE · 4 runs`.
+
+### Review tab
+
+Two view modes — a 3-pane detail view (list / preview / editor) and a thumbnail grid toggle — with per-image include/exclude, caption editor, quick-insert chips, perceptual-hash near-duplicate flags, stats (brightness, sharpness, resolution warnings), and a notes field.
+
+Keyboard shortcuts (scoped to the Review tab only): **←/→** prev/next, **I** toggle include, **Ctrl+S** save.
+
+### Train tab
+
+Start / Resume / Stop (graceful). The Stop button sends SIGINT; training finishes its current step, writes a checkpoint, and exits. Live metrics row: step counter, ETA, elapsed time, and VRAM (used/total MiB, polled from `nvidia-smi` every ~2s). A Canvas-based sparkline plots the loss curve as training progresses. Action shortcuts link to `logs/`, the latest `training_*.log`, `journal.txt`, and `logs/validation/`.
+
+### Settings saves show a diff
+
+Clicking **SAVE SETTINGS** computes a field-level diff against the on-disk `config.json` and shows it in a confirm dialog (`• field: old → new`). When any of `resolution`, `lora_rank`, `lora_alpha`, or `base_model_path` change, the dialog includes a warning that the cache / checkpoints will be invalidated on the next training run.
+
+### Telemetry pane
+
+The bottom log pane is collapsible (caret toggle on its header) and colour-tagged: `error` in red, `warn` in gold, `info` in cyan, training `step` lines in amber, and meta lines in muted grey.
+
+### Folder fields
+
+Every path-valued input in the GUI (source folder, base checkpoint, project root) uses a composite widget with **BROWSE…** and **OPEN** buttons, so any folder is one click away from your system file manager.
 
 ## Training knobs worth knowing
 
@@ -163,7 +189,13 @@ Always preserves `lora/`, `outputs/`, `logs/`, `config.json`, `review.json`. Pro
 
 - `src/image_trainer/config.py` — `Project` dataclass (60+ fields, all in `config.json`) + `ProjectsRoot`.
 - `src/image_trainer/cli.py` — ten subcommands.
-- `src/image_trainer/gui.py` — Tkinter wizard. Owns no ML logic.
+- `src/image_trainer/gui.py` — back-compat shim that re-exports from `gui_app`.
+- `src/image_trainer/gui_app.py` — main window, header, notebook, status dots, telemetry pane.
+- `src/image_trainer/gui_theme.py` — frozen `Theme` dataclass with `.dark()` / `.light()` factories, platform-aware font resolver, `apply_style(root)`.
+- `src/image_trainer/gui_runner.py` — `CLIRunner` (subprocess + SIGINT plumbing).
+- `src/image_trainer/gui_widgets.py` — `StatusDot`, `Sparkline`, `FolderField`, `CollapsibleFrame`, `ThumbnailGrid`.
+- `src/image_trainer/gui_helpers.py` — `parse_step_line`, `probe_vram`, `config_diff`, recent-projects MRU, `open_folder`/`open_file`.
+- `src/image_trainer/tabs/` — one module per pipeline step (`settings_tab`, `prep_tab`, `caption_tab`, `review_tab`, `train_tab`, `generate_tab`).
 - `src/image_trainer/pipeline/` — `ingest`, `resize`, `face_detect`, `caption`, `caption_wd14`, `review`, `insights`, `train`, `generate`.
 - `scripts/legacy_*.py` — pre-refactor standalones; reference only, do not import.
 - `launch.sh` — venv bootstrap + GUI launcher. Portable; safe to commit.

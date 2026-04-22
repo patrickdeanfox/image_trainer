@@ -66,6 +66,11 @@ def _cmd_prep(args: argparse.Namespace) -> None:
     ``--no-face-crop`` overrides ``project.face_aware_crop`` to disable the
     face-aware rule-of-thirds crop for this run. Persists the choice to
     config.json so subsequent runs honour it until flipped again.
+
+    ``--dry-run`` writes 256px thumbnails to ``<project>/preview/`` instead of
+    full-resolution PNGs to ``processed/``. The face-aware decisions run the
+    same way, so this is a cheap audit of which images need manual review
+    before committing to a real prep. Review JSON is not mutated.
     """
     from .pipeline.ingest import ingest_source
     from .pipeline.resize import resize_dataset
@@ -76,11 +81,25 @@ def _cmd_prep(args: argparse.Namespace) -> None:
         project.save()
     if args.source:
         ingest_source(Path(args.source).expanduser().resolve(), project.raw_dir)
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    if dry_run:
+        dst = project.root / "preview"
+        dst.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[dry-run] writing 256px previews to {dst} — no changes to "
+            f"processed/ or review.json.",
+            flush=True,
+        )
+    else:
+        dst = project.processed_dir
+
     result = resize_dataset(
         project.raw_dir,
-        project.processed_dir,
+        dst,
         target_size=project.target_size,
         face_aware=project.face_aware_crop,
+        dry_run=dry_run,
     )
 
     # Any image where face detection was attempted but failed gets marked
@@ -88,7 +107,10 @@ def _cmd_prep(args: argparse.Namespace) -> None:
     # the Review tab before training. A missing detector (user hasn't
     # installed the [face] extra) is a global choice and is NOT treated as
     # a per-image failure.
-    if result.face_failed_stems:
+    #
+    # Dry-run explicitly skips this: the user hasn't committed to a crop
+    # yet, so we don't want to mutate review.json.
+    if not dry_run and result.face_failed_stems:
         from .pipeline import review as review_mod
 
         review = review_mod.load(project)
@@ -348,6 +370,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Disable the face-aware rule-of-thirds crop for this run and "
             "fall back to centre-crop. Persists to config.json."
+        ),
+    )
+    sp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Preview mode: write 256px thumbnails to <project>/preview/ "
+            "instead of full-res PNGs to processed/. Face-aware decisions "
+            "run normally so you can audit crops cheaply; review.json is "
+            "not touched."
         ),
     )
     sp.set_defaults(func=_cmd_prep)

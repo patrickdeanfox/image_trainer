@@ -148,6 +148,7 @@ def resize_dataset(
     target_size: int = 1024,
     face_aware: bool = True,
     progress_cb: Optional[ProgressCb] = None,
+    dry_run: bool = False,
 ) -> ResizeResult:
     """Scale + crop every supported image in ``src`` into ``target_size``-square PNGs in ``dst``.
 
@@ -171,6 +172,15 @@ def resize_dataset(
             particular image, that image falls back to centre-crop and is
             flagged in the returned ``face_failed_stems``.
         progress_cb: Optional ``(done, total)`` callback for GUI progress.
+        dry_run: Preview mode. When ``True``, crops are still computed the
+            same way (so you can audit face-aware decisions) but each output
+            is downscaled to **256px** before being written to ``dst`` and
+            the caller is expected to target a throwaway folder like
+            ``preview/`` rather than ``processed/``. The regular run
+            ("are we overwriting anything already reviewed?") is decoupled
+            from the full-res write. This keeps a dry-run fast and
+            non-destructive — the user can open the preview folder, decide
+            they like the crops, then run without ``--dry-run`` for real.
 
     Returns:
         :class:`ResizeResult` with ``paths`` (destination PNGs in write order,
@@ -181,6 +191,9 @@ def resize_dataset(
     src = Path(src)
     dst = Path(dst)
     dst.mkdir(parents=True, exist_ok=True)
+
+    # Preview thumbnail edge. Kept small so a dry run over 200 images is cheap.
+    preview_size = 256
 
     sources = list(_iter_source_images(src))
     total = len(sources)
@@ -222,6 +235,9 @@ def resize_dataset(
 
             img = img.resize((sw, sh), Image.LANCZOS)
             img = img.crop((left, top, left + target_size, top + target_size))
+
+            if dry_run:
+                img = img.resize((preview_size, preview_size), Image.LANCZOS)
 
             out = dst / f"{i:04d}.png"
             img.save(out)

@@ -38,3 +38,39 @@ trainer = "image_trainer.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# --------------------------------------------------------------------------
+# Type-checker config. mypy is optional — no CI gates on it — but if you
+# run it locally (`mypy src/image_trainer`) you get a useful report without
+# drowning in import errors from the ML stack, which is generally not typed.
+# Keep `strict` on so new code is held to a higher bar; loosen one setting
+# at a time if you hit a genuine false positive, don't disable the whole
+# thing.
+# --------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_reexport = false
+files = ["src/image_trainer"]
+
+# Most of our runtime deps ship without type stubs; silence the import
+# errors rather than polluting the codebase with per-import `# type: ignore`.
+[[tool.mypy.overrides]]
+module = [
+    "torch.*",
+    "torchvision.*",
+    "diffusers.*",
+    "transformers.*",
+    "peft.*",
+    "accelerate.*",
+    "safetensors.*",
+    "bitsandbytes.*",
+    "xformers.*",
+    "onnxruntime.*",
+    "huggingface_hub.*",
+    "facenet_pytorch.*",
+    "PIL.*",
+]
+ignore_missing_imports = true

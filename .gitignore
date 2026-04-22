@@ -71,5 +71,11 @@ temp/
 outputs/
 logs/
 
+# GUI dry-run previews (per-project 256px thumbnails from `trainer prep --dry-run`)
+preview/
+
+# GUI recent-projects MRU cache (lives next to the projects root)
+.recent_projects.json
+
 # Local launcher shortcut (hardcoded absolute paths, machine-specific)
 image_trainer.desktop
