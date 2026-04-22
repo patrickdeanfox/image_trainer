@@ -114,10 +114,11 @@ def _cmd_caption(args: argparse.Namespace) -> None:
 def _cmd_train(args: argparse.Namespace) -> None:
     """Handler for ``trainer train``: run the SDXL LoRA training loop.
 
-    ``--resume`` is mutually exclusive with ``--rank``/``--resolution``/``--base``
-    because those silently invalidate either the LoRA tensor shapes in the
-    last checkpoint or the VAE-latent / text-embedding cache. Users get a
-    clear error instead of a silent training corruption.
+    ``--resume`` disallows *changing* ``--rank``/``--resolution``/``--base``
+    (passing the same value as what's already saved is fine). Changing any of
+    those would silently invalidate the LoRA tensor shapes in the last
+    checkpoint or the VAE-latent / text-embedding cache, so users get a clear
+    error instead of a silent training corruption.
     """
     from .pipeline.train import train_lora
 

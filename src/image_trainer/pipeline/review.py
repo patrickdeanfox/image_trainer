@@ -71,9 +71,14 @@ def load(project: Project) -> Review:
                     caption=str(raw.get("caption", "")),
                     notes=str(raw.get("notes", "")),
                 )
-        except Exception:
-            # Corrupt or hand-edited -> ignore and rebuild from disk.
-            pass
+        except Exception as e:
+            # Corrupt or hand-edited -> warn and rebuild from disk so the user
+            # sees that their previous review state was dropped.
+            print(
+                f"Warning: {path} is not readable ({e}); "
+                f"rebuilding review from processed/.",
+                flush=True,
+            )
 
     png_stems = {p.stem for p in project.processed_dir.glob("*.png")}
 
@@ -103,16 +108,16 @@ def load(project: Project) -> Review:
 
 def save(project: Project, review: Review) -> Path:
     """Persist review.json and sync each entry's caption to its .txt sibling
-    so the training loop's existing caption-reading code keeps working."""
-    project.ensure_dirs()
-    # Write review.json
-    blob = {stem: asdict(entry) for stem, entry in review.entries.items()}
-    # Trim dataclass 'stem' redundancy in serialized form.
-    for v in blob.values():
-        v.pop("stem", None)
-    _review_path(project).write_text(json.dumps(blob, indent=2))
+    so the training loop's existing caption-reading code keeps working.
 
-    # Mirror captions to .txt files (only for included images, so excluded
+    Order matters: .txt files are the ground truth training reads from, so we
+    update them first and only commit review.json once they're in sync. A
+    crash between the two leaves the training loop consistent (it just hasn't
+    seen the latest review UI state), which is the safer failure mode.
+    """
+    project.ensure_dirs()
+
+    # 1. Mirror captions to .txt files (only for included images, so excluded
     # ones don't accidentally get picked up if someone bypasses the review
     # filter).
     for stem, entry in review.entries.items():
@@ -126,6 +131,15 @@ def save(project: Project, review: Review) -> Path:
                     txt_path.unlink()
             except OSError:
                 pass
+
+    # 2. Write review.json last. At this point .txt files already match the
+    # in-memory review state, so training is safe to run even if this write
+    # fails.
+    blob = {stem: asdict(entry) for stem, entry in review.entries.items()}
+    # Trim dataclass 'stem' redundancy in serialized form.
+    for v in blob.values():
+        v.pop("stem", None)
+    _review_path(project).write_text(json.dumps(blob, indent=2))
     return _review_path(project)
 
 

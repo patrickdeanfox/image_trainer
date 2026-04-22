@@ -1397,6 +1397,14 @@ class TrainerGUI:
         if sent:
             self.train_status_var.set("stop requested; checkpointing before exit...")
             self.status_var.set("sent SIGINT to training subprocess")
+            # Push a line into the log pane too. The subprocess's own
+            # "Caught signal..." print will arrive when the training loop
+            # notices the flag, which can take 10-30 seconds if a step is
+            # mid-way; this gives the user immediate visible feedback.
+            self.runner.log_queue.put(
+                "[stop requested; waiting for training to checkpoint and exit "
+                "— this can take up to ~30s while the current step finishes]\n"
+            )
         else:
             messagebox.showerror(
                 "Stop failed",

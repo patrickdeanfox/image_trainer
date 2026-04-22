@@ -171,6 +171,8 @@ class Project:
     )
 
     # runtime
+    # Reserved for future profile-aware defaults. Currently not read by any
+    # training/generation code path — safe to ignore or delete from config.json.
     vram_profile: VramProfile = "10gb"
 
     # ---------- derived paths ----------

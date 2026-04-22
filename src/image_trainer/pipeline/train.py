@@ -68,7 +68,8 @@ def append_journal(project: Project, note: str, extra: Optional[dict] = None) ->
     if note:
         bits.append(f"note={note!r}")
     line = " ".join(bits) + "\n"
-    (project.logs_dir / "journal.txt").open("a").write(line)
+    with (project.logs_dir / "journal.txt").open("a") as f:
+        f.write(line)
 
 
 # ---------- tee logging ----------
@@ -135,7 +136,12 @@ def _validate_or_reset_cache(project: Project) -> None:
     if marker_path.exists():
         try:
             prev = json.loads(marker_path.read_text())
-        except Exception:
+        except Exception as e:
+            print(
+                f"Warning: {marker_path} is not valid JSON ({e}); "
+                f"treating the cache as stale and rebuilding.",
+                flush=True,
+            )
             prev = None
         if prev != current:
             print(
@@ -436,10 +442,20 @@ def _wrap_text_encoders_with_lora(pipe, project: Project):
 def _find_latest_checkpoint(ckpt_dir: Path) -> Optional[Path]:
     if not ckpt_dir.exists():
         return None
-    candidates = [p for p in ckpt_dir.iterdir() if p.is_dir() and p.name.startswith("step_")]
-    if not candidates:
+    # Only consider directories whose name parses as "step_<int>". This skips
+    # hand-renamed dirs like "step_final" instead of crashing with ValueError.
+    valid: list[tuple[int, Path]] = []
+    for p in ckpt_dir.iterdir():
+        if not (p.is_dir() and p.name.startswith("step_")):
+            continue
+        try:
+            step = int(p.name.split("_", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        valid.append((step, p))
+    if not valid:
         return None
-    return max(candidates, key=lambda p: int(p.name.split("_")[1]))
+    return max(valid, key=lambda pair: pair[0])[1]
 
 
 # ---------- loss helpers ----------
@@ -763,11 +779,16 @@ def train_lora(
             )
             stop_requested["flag"] = True
 
-        signal.signal(signal.SIGINT, _handle_signal)
+        # Save originals so we can restore them on normal return. Exception
+        # paths skip the restore, but the handler only sets a flag, so a
+        # lingering handler is benign. In the CLI case the process exits
+        # right after train_lora() anyway; this matters for nested callers
+        # (tests, batch runners) that invoke train_lora more than once.
+        _orig_sigint = signal.signal(signal.SIGINT, _handle_signal)
         try:
-            signal.signal(signal.SIGTERM, _handle_signal)
+            _orig_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
         except Exception:
-            pass  # Windows doesn't support SIGTERM the same way.
+            _orig_sigterm = None  # Windows doesn't support SIGTERM the same way.
 
         # Shuffled-epoch iteration. On resume, fast-forward the RNG by the number
         # of completed epochs so the next epoch's shuffle matches what a fresh
@@ -833,6 +854,10 @@ def train_lora(
                 pooled = embed_blob["pooled"].to(
                     device, dtype=torch.float32
                 ).unsqueeze(0)
+                # Drop the dict so its CPU-resident source tensors can be
+                # reclaimed immediately; on a 10 GB budget every bit of
+                # fragmentation headroom helps over long runs.
+                del embed_blob
             bsz = latent.shape[0]
             time_ids = base_time_ids.unsqueeze(0).expand(bsz, -1)
 
@@ -932,5 +957,14 @@ def train_lora(
                 f"and {project.lora_dir / 'text_encoder_2'}",
                 flush=True,
             )
+
+        # Restore the signal handlers we installed above, so nested callers
+        # (tests, batch runners) don't inherit our shutdown trap.
+        signal.signal(signal.SIGINT, _orig_sigint)
+        if _orig_sigterm is not None:
+            try:
+                signal.signal(signal.SIGTERM, _orig_sigterm)
+            except Exception:
+                pass
 
         return project.lora_dir

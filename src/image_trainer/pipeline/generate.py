@@ -87,11 +87,15 @@ def generate(
     if seed is not None:
         generator = torch.Generator(device="cuda").manual_seed(seed)
 
+    # Empty string disables the negative prompt — make the intent explicit
+    # rather than relying on truthy-to-None coercion.
+    negative_prompt = negative if negative else None
+
     results: list[Path] = []
     for i in range(n):
         image = pipe(
             prompt=prompt,
-            negative_prompt=negative or None,
+            negative_prompt=negative_prompt,
             num_inference_steps=steps,
             guidance_scale=guidance,
             generator=generator,
