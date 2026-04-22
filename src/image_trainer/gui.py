@@ -116,25 +116,364 @@ class CLIRunner:
 PAD = 8
 
 
-def _apply_style(root: tk.Tk) -> None:
-    """Pick the ``clam`` ttk theme and tweak a few shared widget styles.
+class _Theme:
+    """Central palette and font token set for the GUI.
 
-    Kept minimal and asset-free so the GUI boots on any Python with Tk
-    (no Pillow-ImageTk asset loading at startup, no custom fonts).
+    LCARS-inspired (Star-Trek-style) obsidian/glass aesthetic: near-black
+    stacked surface tiers, thin dividers, a single amber primary, cyan +
+    violet secondaries, and a gold for caution notices. All colours are
+    hex strings so they flow cleanly into both `ttk.Style` configure
+    calls and the handful of `tk.*` widgets that don't honour ttk styles
+    (Text, Listbox, ScrolledText).
+
+    Keep this class the single source of truth — no ad-hoc hex strings
+    scattered through the layout code.
+    """
+
+    # Surface tiers — each step slightly lighter than the one below,
+    # simulating layered glass on an obsidian console.
+    BG_ROOT = "#05070D"
+    BG_PANEL = "#0B1020"
+    BG_ELEVATED = "#121A33"
+    BG_INPUT = "#0E1526"
+    BG_HOVER = "#1A2340"
+    BG_PRESSED = "#22305A"
+
+    # Primary/secondary/tertiary accents. Amber is reserved for the
+    # dominant call-to-action and for the active tab underline.
+    ACCENT_AMBER = "#FFB74D"
+    ACCENT_CYAN = "#6FD6FF"
+    ACCENT_VIOLET = "#B79CFF"
+    ACCENT_RED = "#FF6B6B"
+    ACCENT_GOLD = "#F2C14E"
+
+    # Structural strokes — kept low-contrast on purpose.
+    DIVIDER = "#1F2A47"
+    BORDER_SOFT = "#2A3656"
+
+    # Text ramp.
+    TEXT_PRIMARY = "#E8EEF8"
+    TEXT_SECONDARY = "#B7C0D8"
+    TEXT_MUTED = "#6B7591"
+    TEXT_ON_ACCENT = "#0A0E1A"
+
+    # Fonts. Helvetica Neue is the closest freely-available match to the
+    # LCARS `Swiss 911` look. `TkFixedFont` keeps the log pane monospace
+    # on any platform even when we can't find a preferred mono face.
+    FONT_BODY = ("Helvetica Neue", 10)
+    FONT_HEADER = ("Helvetica Neue", 11, "bold")
+    FONT_LCARS = ("Helvetica Neue", 10, "bold")
+    FONT_DISPLAY = ("Helvetica Neue", 16, "bold")
+    FONT_MONO = ("JetBrains Mono", 10)
+
+
+THEME = _Theme()
+
+
+def _apply_style(root: tk.Tk) -> None:
+    """Apply the glass/LCARS visual language to every ttk and raw-tk widget.
+
+    Two-part strategy:
+
+    1. ``ttk.Style`` configures every ``T*`` widget class the GUI uses
+       (frames, labels, buttons, notebook, entries, combos, checks,
+       labelframes, progress bars, scrollbars).
+    2. ``root.option_add`` installs defaults for the handful of raw-tk
+       widgets Tk can't reach via styles — ``tk.Text``, ``tk.Listbox``,
+       ``scrolledtext.ScrolledText``. This avoids sprinkling per-widget
+       ``background=`` kwargs through the layout code.
     """
     style = ttk.Style(root)
     try:
         style.theme_use("clam")
     except tk.TclError:
         pass
-    style.configure("TLabel", padding=(2, 2))
-    style.configure("TButton", padding=(8, 4))
-    style.configure("TEntry", padding=(4, 2))
-    style.configure("TCheckbutton", padding=(2, 2))
-    style.configure("TCombobox", padding=(4, 2))
-    style.configure("Header.TLabel", font=("TkDefaultFont", 11, "bold"))
-    style.configure("Status.TLabel", foreground="#555")
-    style.configure("Trainer.Horizontal.TProgressbar", thickness=20)
+
+    root.configure(background=THEME.BG_ROOT)
+
+    # ---- raw-tk defaults (Text, Listbox, Menu) ----
+    root.option_add("*Font", THEME.FONT_BODY)
+    root.option_add("*background", THEME.BG_ROOT)
+    root.option_add("*foreground", THEME.TEXT_PRIMARY)
+
+    for w in ("Text", "Listbox", "ScrolledText"):
+        root.option_add(f"*{w}.background", THEME.BG_INPUT)
+        root.option_add(f"*{w}.foreground", THEME.TEXT_PRIMARY)
+        root.option_add(f"*{w}.borderWidth", 0)
+        root.option_add(f"*{w}.relief", "flat")
+        root.option_add(f"*{w}.highlightThickness", 1)
+        root.option_add(f"*{w}.highlightBackground", THEME.DIVIDER)
+        root.option_add(f"*{w}.highlightColor", THEME.ACCENT_AMBER)
+        root.option_add(f"*{w}.selectBackground", THEME.ACCENT_AMBER)
+        root.option_add(f"*{w}.selectForeground", THEME.TEXT_ON_ACCENT)
+    root.option_add("*Text.insertBackground", THEME.ACCENT_CYAN)
+    root.option_add("*ScrolledText.insertBackground", THEME.ACCENT_CYAN)
+    root.option_add("*Listbox.activeStyle", "none")
+
+    root.option_add("*Menu.background", THEME.BG_ELEVATED)
+    root.option_add("*Menu.foreground", THEME.TEXT_PRIMARY)
+    root.option_add("*Menu.activeBackground", THEME.ACCENT_AMBER)
+    root.option_add("*Menu.activeForeground", THEME.TEXT_ON_ACCENT)
+    root.option_add("*Menu.borderWidth", 0)
+
+    # ---- frames ----
+    style.configure("TFrame", background=THEME.BG_ROOT)
+    style.configure("Panel.TFrame", background=THEME.BG_PANEL)
+    style.configure("Elevated.TFrame", background=THEME.BG_ELEVATED)
+
+    # ---- labels ----
+    style.configure(
+        "TLabel",
+        background=THEME.BG_ROOT,
+        foreground=THEME.TEXT_PRIMARY,
+        font=THEME.FONT_BODY,
+        padding=(2, 2),
+    )
+    style.configure(
+        "Header.TLabel",
+        background=THEME.BG_ROOT,
+        foreground=THEME.ACCENT_AMBER,
+        font=THEME.FONT_HEADER,
+    )
+    style.configure(
+        "Display.TLabel",
+        background=THEME.BG_ROOT,
+        foreground=THEME.ACCENT_AMBER,
+        font=THEME.FONT_DISPLAY,
+    )
+    style.configure(
+        "SubHeader.TLabel",
+        background=THEME.BG_ROOT,
+        foreground=THEME.ACCENT_CYAN,
+        font=THEME.FONT_LCARS,
+    )
+    style.configure(
+        "Status.TLabel",
+        background=THEME.BG_ROOT,
+        foreground=THEME.TEXT_MUTED,
+        font=THEME.FONT_BODY,
+    )
+    style.configure(
+        "Warn.TLabel",
+        background=THEME.BG_ROOT,
+        foreground=THEME.ACCENT_GOLD,
+        font=THEME.FONT_BODY,
+    )
+    style.configure(
+        "Preview.TLabel",
+        background=THEME.BG_INPUT,
+        foreground=THEME.TEXT_MUTED,
+        borderwidth=1,
+        relief="flat",
+    )
+
+    # ---- buttons ----
+    style.configure(
+        "TButton",
+        background=THEME.BG_ELEVATED,
+        foreground=THEME.ACCENT_AMBER,
+        font=THEME.FONT_LCARS,
+        padding=(14, 6),
+        borderwidth=0,
+        relief="flat",
+        focuscolor=THEME.BG_ELEVATED,
+    )
+    style.map(
+        "TButton",
+        background=[
+            ("pressed", THEME.BG_PRESSED),
+            ("active", THEME.BG_HOVER),
+            ("disabled", THEME.BG_PANEL),
+        ],
+        foreground=[
+            ("disabled", THEME.TEXT_MUTED),
+            ("pressed", THEME.TEXT_PRIMARY),
+            ("active", THEME.ACCENT_CYAN),
+        ],
+    )
+    # Primary call-to-action: solid amber fill.
+    style.configure(
+        "Primary.TButton",
+        background=THEME.ACCENT_AMBER,
+        foreground=THEME.TEXT_ON_ACCENT,
+        font=THEME.FONT_LCARS,
+        padding=(18, 7),
+        borderwidth=0,
+        relief="flat",
+        focuscolor=THEME.ACCENT_AMBER,
+    )
+    style.map(
+        "Primary.TButton",
+        background=[
+            ("pressed", THEME.ACCENT_VIOLET),
+            ("active", THEME.ACCENT_CYAN),
+            ("disabled", THEME.BG_PANEL),
+        ],
+        foreground=[
+            ("disabled", THEME.TEXT_MUTED),
+            ("active", THEME.TEXT_ON_ACCENT),
+            ("pressed", THEME.TEXT_ON_ACCENT),
+        ],
+    )
+    # Caution action: gold fill; reserved for the graceful-stop button.
+    style.configure(
+        "Caution.TButton",
+        background=THEME.BG_ELEVATED,
+        foreground=THEME.ACCENT_RED,
+        font=THEME.FONT_LCARS,
+        padding=(14, 6),
+        borderwidth=0,
+        relief="flat",
+    )
+    style.map(
+        "Caution.TButton",
+        background=[("active", THEME.BG_HOVER), ("pressed", THEME.BG_PRESSED)],
+        foreground=[("active", THEME.ACCENT_AMBER)],
+    )
+
+    # ---- entries / comboboxes ----
+    style.configure(
+        "TEntry",
+        fieldbackground=THEME.BG_INPUT,
+        foreground=THEME.TEXT_PRIMARY,
+        insertcolor=THEME.ACCENT_CYAN,
+        bordercolor=THEME.DIVIDER,
+        lightcolor=THEME.DIVIDER,
+        darkcolor=THEME.DIVIDER,
+        borderwidth=1,
+        relief="flat",
+        padding=(8, 5),
+    )
+    style.map(
+        "TEntry",
+        bordercolor=[("focus", THEME.ACCENT_AMBER)],
+        lightcolor=[("focus", THEME.ACCENT_AMBER)],
+        darkcolor=[("focus", THEME.ACCENT_AMBER)],
+    )
+
+    style.configure(
+        "TCombobox",
+        fieldbackground=THEME.BG_INPUT,
+        background=THEME.BG_ELEVATED,
+        foreground=THEME.TEXT_PRIMARY,
+        arrowcolor=THEME.ACCENT_AMBER,
+        bordercolor=THEME.DIVIDER,
+        lightcolor=THEME.DIVIDER,
+        darkcolor=THEME.DIVIDER,
+        borderwidth=1,
+        relief="flat",
+        padding=(6, 4),
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", THEME.BG_INPUT)],
+        foreground=[("readonly", THEME.TEXT_PRIMARY), ("disabled", THEME.TEXT_MUTED)],
+        bordercolor=[("focus", THEME.ACCENT_AMBER)],
+        arrowcolor=[("active", THEME.ACCENT_CYAN)],
+    )
+    # The drop-down popdown uses tk listbox styling via option_add above.
+
+    # ---- checkbutton ----
+    style.configure(
+        "TCheckbutton",
+        background=THEME.BG_ROOT,
+        foreground=THEME.TEXT_PRIMARY,
+        indicatorbackground=THEME.BG_INPUT,
+        indicatorforeground=THEME.ACCENT_AMBER,
+        focuscolor=THEME.BG_ROOT,
+        padding=(4, 2),
+    )
+    style.map(
+        "TCheckbutton",
+        background=[("active", THEME.BG_ROOT)],
+        foreground=[("active", THEME.ACCENT_AMBER), ("disabled", THEME.TEXT_MUTED)],
+        indicatorcolor=[
+            ("selected", THEME.ACCENT_AMBER),
+            ("!selected", THEME.BG_INPUT),
+        ],
+    )
+
+    # ---- labelframe ----
+    style.configure(
+        "TLabelframe",
+        background=THEME.BG_ROOT,
+        bordercolor=THEME.DIVIDER,
+        lightcolor=THEME.DIVIDER,
+        darkcolor=THEME.DIVIDER,
+        borderwidth=1,
+        relief="flat",
+        padding=PAD,
+    )
+    style.configure(
+        "TLabelframe.Label",
+        background=THEME.BG_ROOT,
+        foreground=THEME.ACCENT_CYAN,
+        font=THEME.FONT_LCARS,
+    )
+
+    # ---- notebook — flat tabs, amber on active ----
+    style.configure(
+        "TNotebook",
+        background=THEME.BG_ROOT,
+        bordercolor=THEME.BG_ROOT,
+        lightcolor=THEME.BG_ROOT,
+        darkcolor=THEME.BG_ROOT,
+        borderwidth=0,
+        tabmargins=(0, 4, 0, 0),
+    )
+    style.configure(
+        "TNotebook.Tab",
+        background=THEME.BG_PANEL,
+        foreground=THEME.TEXT_SECONDARY,
+        font=THEME.FONT_LCARS,
+        padding=(22, 9),
+        borderwidth=0,
+        focuscolor=THEME.BG_PANEL,
+    )
+    style.map(
+        "TNotebook.Tab",
+        background=[
+            ("selected", THEME.BG_ELEVATED),
+            ("active", THEME.BG_HOVER),
+        ],
+        foreground=[
+            ("selected", THEME.ACCENT_AMBER),
+            ("active", THEME.ACCENT_CYAN),
+        ],
+    )
+
+    # ---- progressbar ----
+    style.configure(
+        "Trainer.Horizontal.TProgressbar",
+        troughcolor=THEME.BG_INPUT,
+        background=THEME.ACCENT_AMBER,
+        bordercolor=THEME.BG_INPUT,
+        lightcolor=THEME.ACCENT_AMBER,
+        darkcolor=THEME.ACCENT_AMBER,
+        thickness=14,
+    )
+
+    # ---- scrollbars ----
+    for orient in ("Vertical", "Horizontal"):
+        style.configure(
+            f"{orient}.TScrollbar",
+            background=THEME.BG_PANEL,
+            troughcolor=THEME.BG_ROOT,
+            bordercolor=THEME.BG_ROOT,
+            arrowcolor=THEME.ACCENT_AMBER,
+            lightcolor=THEME.BG_PANEL,
+            darkcolor=THEME.BG_PANEL,
+            borderwidth=0,
+            relief="flat",
+        )
+        style.map(
+            f"{orient}.TScrollbar",
+            background=[("active", THEME.BG_HOVER)],
+            arrowcolor=[("active", THEME.ACCENT_CYAN)],
+        )
+
+    # ---- separators ----
+    style.configure("TSeparator", background=THEME.DIVIDER)
 
 
 # ---------- GUI ----------
@@ -153,9 +492,9 @@ class TrainerGUI:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("image_trainer")
-        self.root.geometry("980x820")
-        self.root.minsize(880, 700)
+        self.root.title("IMAGE TRAINER · OPERATIONS")
+        self.root.geometry("1040x860")
+        self.root.minsize(940, 720)
 
         _apply_style(self.root)
 
@@ -173,6 +512,7 @@ class TrainerGUI:
     # ---- layout ----
 
     def _build_ui(self) -> None:
+        self._build_header_bar()
         self._build_project_bar()
 
         self.nb = ttk.Notebook(self.root)
@@ -185,12 +525,12 @@ class TrainerGUI:
         self.tab_train = ttk.Frame(self.nb, padding=PAD)
         self.tab_generate = ttk.Frame(self.nb, padding=PAD)
 
-        self.nb.add(self.tab_settings, text="1. Settings")
-        self.nb.add(self.tab_prep, text="2. Import & Resize")
-        self.nb.add(self.tab_caption, text="3. Caption")
-        self.nb.add(self.tab_review, text="4. Review")
-        self.nb.add(self.tab_train, text="5. Train")
-        self.nb.add(self.tab_generate, text="6. Generate")
+        self.nb.add(self.tab_settings, text="01 · SETTINGS")
+        self.nb.add(self.tab_prep, text="02 · INGEST")
+        self.nb.add(self.tab_caption, text="03 · CAPTION")
+        self.nb.add(self.tab_review, text="04 · REVIEW")
+        self.nb.add(self.tab_train, text="05 · TRAIN")
+        self.nb.add(self.tab_generate, text="06 · GENERATE")
 
         self._build_settings_tab()
         self._build_prep_tab()
@@ -202,20 +542,59 @@ class TrainerGUI:
         # Refresh the Review tab whenever the user switches to it.
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
-        log_frame = ttk.LabelFrame(self.root, text="Log", padding=PAD)
+        log_frame = ttk.LabelFrame(self.root, text="TELEMETRY", padding=PAD)
         log_frame.pack(fill="both", expand=True, padx=PAD, pady=(0, 0))
         self.log = scrolledtext.ScrolledText(
-            log_frame, height=10, state="disabled", background="#1d1f21", foreground="#eaeaea",
-            insertbackground="#eaeaea", font=("TkFixedFont", 10),
+            log_frame, height=10, state="disabled",
+            background=THEME.BG_PANEL, foreground=THEME.TEXT_SECONDARY,
+            insertbackground=THEME.ACCENT_CYAN, font=("TkFixedFont", 10),
+            relief="flat", borderwidth=0,
+            highlightthickness=1, highlightbackground=THEME.DIVIDER,
         )
         self.log.pack(fill="both", expand=True)
 
-        self.status_var = tk.StringVar(value="ready")
+        self.status_var = tk.StringVar(value="READY")
         status = ttk.Label(self.root, textvariable=self.status_var, style="Status.TLabel", anchor="w")
         status.pack(fill="x", padx=PAD, pady=(4, PAD))
 
+    def _build_header_bar(self) -> None:
+        """LCARS-style top strip: a slim amber rule, a system identifier, and
+        two colour-coded marker blocks on the right. Decorative only — no
+        widgets here are hooked to commands or vars."""
+        bar = ttk.Frame(self.root, style="Panel.TFrame")
+        bar.pack(fill="x", padx=PAD, pady=(PAD, 0))
+
+        # Left: display-weight title.
+        ttk.Label(
+            bar,
+            text="IMAGE TRAINER",
+            style="Display.TLabel",
+            background=THEME.BG_PANEL,
+        ).pack(side="left", padx=(PAD, PAD * 2), pady=(PAD // 2, PAD // 2))
+
+        ttk.Label(
+            bar,
+            text="LOCAL SDXL LORA · OPERATIONS CONSOLE",
+            style="SubHeader.TLabel",
+            background=THEME.BG_PANEL,
+        ).pack(side="left", pady=(PAD // 2, PAD // 2))
+
+        # Right: decorative LCARS marker pills.
+        right = ttk.Frame(bar, style="Panel.TFrame")
+        right.pack(side="right", padx=PAD, pady=PAD // 2)
+        for color in (THEME.ACCENT_VIOLET, THEME.ACCENT_CYAN, THEME.ACCENT_AMBER):
+            pill = tk.Frame(right, background=color, width=28, height=10,
+                            highlightthickness=0, borderwidth=0)
+            pill.pack(side="left", padx=(0, 4))
+            pill.pack_propagate(False)
+
+        # Thin amber rule under the header.
+        rule = tk.Frame(self.root, background=THEME.ACCENT_AMBER, height=1,
+                        highlightthickness=0, borderwidth=0)
+        rule.pack(fill="x", padx=PAD)
+
     def _build_project_bar(self) -> None:
-        bar = ttk.LabelFrame(self.root, text="Projects", padding=PAD)
+        bar = ttk.LabelFrame(self.root, text="PROJECTS", padding=PAD)
         bar.pack(fill="x", padx=PAD, pady=PAD)
 
         ttk.Label(bar, text="Projects folder:").grid(row=0, column=0, sticky="w")
@@ -252,7 +631,7 @@ class TrainerGUI:
         self.xformers_var = tk.BooleanVar(value=True)
         self.te_lora_var = tk.BooleanVar(value=False)
 
-        ttk.Label(f, text="Subject & base model", style="Header.TLabel").grid(
+        ttk.Label(f, text="SUBJECT · BASE MODEL", style="Header.TLabel").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, PAD)
         )
 
@@ -264,7 +643,7 @@ class TrainerGUI:
         ttk.Button(f, text="Browse...", command=self._pick_base_model).grid(row=2, column=2, padx=PAD)
 
         # --- OOM / quality knobs ---
-        oom = ttk.LabelFrame(f, text="OOM / quality knobs", padding=PAD)
+        oom = ttk.LabelFrame(f, text="OOM · QUALITY KNOBS", padding=PAD)
         oom.grid(row=3, column=0, columnspan=3, sticky="we", pady=(PAD * 2, PAD))
         oom.columnconfigure(1, weight=0)
         oom.columnconfigure(3, weight=1)
@@ -296,7 +675,7 @@ class TrainerGUI:
         ).grid(row=1, column=3, sticky="w", padx=PAD)
 
         # --- schedule ---
-        sched = ttk.LabelFrame(f, text="Training length", padding=PAD)
+        sched = ttk.LabelFrame(f, text="TRAINING LENGTH", padding=PAD)
         sched.grid(row=4, column=0, columnspan=3, sticky="we", pady=(0, PAD))
 
         ttk.Label(sched, text="Max steps:").grid(row=0, column=0, sticky="w", pady=2)
@@ -306,7 +685,7 @@ class TrainerGUI:
         ttk.Label(sched, text="Validation every (0 = off):").grid(row=1, column=0, sticky="w", pady=2)
         ttk.Entry(sched, textvariable=self.validation_steps_var, width=10).grid(row=1, column=1, sticky="w", padx=PAD)
 
-        ttk.Button(f, text="Save settings", command=self._save_settings).grid(
+        ttk.Button(f, text="Save settings", style="Primary.TButton", command=self._save_settings).grid(
             row=5, column=1, sticky="w", padx=PAD, pady=PAD
         )
 
@@ -315,30 +694,30 @@ class TrainerGUI:
         f.columnconfigure(1, weight=1)
         self.source_dir_var = tk.StringVar()
 
-        ttk.Label(f, text="Import source images and resize to 1024×1024", style="Header.TLabel").grid(
+        ttk.Label(f, text="INGEST · RESIZE TO 1024 × 1024", style="Header.TLabel").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, PAD)
         )
         ttk.Label(f, text="Source folder:").grid(row=1, column=0, sticky="w")
         ttk.Entry(f, textvariable=self.source_dir_var).grid(row=1, column=1, padx=PAD, sticky="we")
         ttk.Button(f, text="Browse...", command=self._pick_source_dir).grid(row=1, column=2)
-        ttk.Button(f, text="Import & resize", command=self._on_prep).grid(
+        ttk.Button(f, text="Import & resize", style="Primary.TButton", command=self._on_prep).grid(
             row=2, column=1, sticky="w", padx=PAD, pady=PAD
         )
 
     def _build_caption_tab(self) -> None:
         f = self.tab_caption
-        ttk.Label(f, text="Caption processed images", style="Header.TLabel").grid(
+        ttk.Label(f, text="CAPTION · PROCESSED IMAGES", style="Header.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, PAD)
         )
         ttk.Label(
             f,
             text=(
-                "Runs BLIP over processed/ and writes '<trigger>, <caption>' .txt files.\n"
-                "Requires a CUDA GPU."
+                "Runs the configured captioner over processed/ and writes\n"
+                "'<trigger>, <caption>' .txt files.  Requires a CUDA GPU."
             ),
             justify="left",
         ).grid(row=1, column=0, sticky="w")
-        ttk.Button(f, text="Run captioning", command=self._on_caption).grid(
+        ttk.Button(f, text="Run captioning", style="Primary.TButton", command=self._on_caption).grid(
             row=2, column=0, sticky="w", pady=PAD
         )
 
@@ -351,7 +730,7 @@ class TrainerGUI:
         # --- top bar: header + nav + counts ---
         top = ttk.Frame(f)
         top.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, PAD))
-        ttk.Label(top, text="Review & caption each image", style="Header.TLabel").pack(side="left")
+        ttk.Label(top, text="REVIEW · CAPTION EACH IMAGE", style="Header.TLabel").pack(side="left")
         self.review_counts_var = tk.StringVar(value="—")
         ttk.Label(top, textvariable=self.review_counts_var, style="Status.TLabel").pack(side="right")
 
@@ -359,7 +738,14 @@ class TrainerGUI:
         left = ttk.Frame(f)
         left.grid(row=1, column=0, sticky="nswe")
         left.rowconfigure(0, weight=1)
-        self.review_list = tk.Listbox(left, width=22, activestyle="dotbox", exportselection=False)
+        self.review_list = tk.Listbox(
+            left, width=22, activestyle="none", exportselection=False,
+            background=THEME.BG_INPUT, foreground=THEME.TEXT_PRIMARY,
+            selectbackground=THEME.ACCENT_AMBER, selectforeground=THEME.TEXT_ON_ACCENT,
+            highlightthickness=1, highlightbackground=THEME.DIVIDER,
+            highlightcolor=THEME.ACCENT_AMBER, borderwidth=0, relief="flat",
+            font=THEME.FONT_BODY,
+        )
         self.review_list.grid(row=0, column=0, sticky="nswe")
         lb_scroll = ttk.Scrollbar(left, orient="vertical", command=self.review_list.yview)
         lb_scroll.grid(row=0, column=1, sticky="ns")
@@ -378,7 +764,9 @@ class TrainerGUI:
         right.rowconfigure(1, weight=1)
 
         # image preview
-        self.review_image_label = ttk.Label(right, anchor="center", relief="sunken", background="#111")
+        self.review_image_label = ttk.Label(
+            right, anchor="center", style="Preview.TLabel",
+        )
         self.review_image_label.grid(row=0, column=0, sticky="we")
 
         # caption editor + chips + info
@@ -395,18 +783,24 @@ class TrainerGUI:
         ).grid(row=0, column=0, columnspan=2, sticky="w")
 
         ttk.Label(editor, text="Caption:").grid(row=1, column=0, sticky="nw", pady=(PAD, 2))
-        self.review_caption_text = tk.Text(editor, height=4, wrap="word", font=("TkDefaultFont", 10))
+        self.review_caption_text = tk.Text(
+            editor, height=4, wrap="word", font=THEME.FONT_BODY,
+            background=THEME.BG_INPUT, foreground=THEME.TEXT_PRIMARY,
+            insertbackground=THEME.ACCENT_CYAN, relief="flat", borderwidth=0,
+            highlightthickness=1, highlightbackground=THEME.DIVIDER,
+            highlightcolor=THEME.ACCENT_AMBER,
+        )
         self.review_caption_text.grid(row=1, column=1, rowspan=2, sticky="nswe", padx=(PAD, 0))
         self.review_caption_text.bind("<FocusOut>", lambda _e: self._capture_current_editor())
 
         # prompt chips
-        chips = ttk.LabelFrame(editor, text="Quick tags (click to append)", padding=PAD)
+        chips = ttk.LabelFrame(editor, text="QUICK TAGS", padding=PAD)
         chips.grid(row=3, column=0, columnspan=2, sticky="we", pady=(PAD, 0))
         self.review_chips_frame = chips
         self._rebuild_chips([])
 
         # per-image info
-        info = ttk.LabelFrame(editor, text="Image info", padding=PAD)
+        info = ttk.LabelFrame(editor, text="IMAGE INFO", padding=PAD)
         info.grid(row=4, column=0, columnspan=2, sticky="we", pady=(PAD, 0))
         info.columnconfigure(1, weight=1)
         self.review_info_var = tk.StringVar(value="—")
@@ -414,9 +808,9 @@ class TrainerGUI:
             row=0, column=0, columnspan=2, sticky="w"
         )
         self.review_dupes_var = tk.StringVar(value="")
-        ttk.Label(info, textvariable=self.review_dupes_var, foreground="#b08800", justify="left").grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(2, 0)
-        )
+        ttk.Label(
+            info, textvariable=self.review_dupes_var, style="Warn.TLabel", justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # notes
         ttk.Label(editor, text="Notes:").grid(row=5, column=0, sticky="nw", pady=(PAD, 2))
@@ -453,7 +847,7 @@ class TrainerGUI:
         f = self.tab_train
         f.columnconfigure(0, weight=1)
 
-        ttk.Label(f, text="Train the LoRA", style="Header.TLabel").grid(
+        ttk.Label(f, text="TRAIN · LORA", style="Header.TLabel").grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, PAD)
         )
         ttk.Label(
@@ -493,9 +887,9 @@ class TrainerGUI:
 
         btns = ttk.Frame(f)
         btns.grid(row=5, column=0, columnspan=4, sticky="w", pady=PAD)
-        ttk.Button(btns, text="Start training", command=self._on_train).pack(side="left")
+        ttk.Button(btns, text="Start training", style="Primary.TButton", command=self._on_train).pack(side="left")
         ttk.Button(btns, text="Resume training", command=self._on_train_resume).pack(side="left", padx=PAD)
-        ttk.Button(btns, text="Stop (graceful)", command=self._on_train_stop).pack(side="left")
+        ttk.Button(btns, text="Stop (graceful)", style="Caution.TButton", command=self._on_train_stop).pack(side="left")
 
         log_btns = ttk.Frame(f)
         log_btns.grid(row=6, column=0, columnspan=4, sticky="w", pady=PAD)
@@ -515,7 +909,7 @@ class TrainerGUI:
         self.guidance_var = tk.StringVar(value="7.0")
         self.seed_var = tk.StringVar(value="")
 
-        ttk.Label(f, text="Generate with trained LoRA", style="Header.TLabel").grid(
+        ttk.Label(f, text="GENERATE · TRAINED LORA", style="Header.TLabel").grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, PAD)
         )
 
@@ -537,7 +931,7 @@ class TrainerGUI:
 
         btns = ttk.Frame(f)
         btns.grid(row=5, column=0, columnspan=4, sticky="w", pady=PAD)
-        ttk.Button(btns, text="Generate", command=self._on_generate).pack(side="left")
+        ttk.Button(btns, text="Generate", style="Primary.TButton", command=self._on_generate).pack(side="left")
         ttk.Button(btns, text="Open outputs folder", command=self._open_outputs_dir).pack(side="left", padx=PAD)
 
     # ---- project bar handlers ----
