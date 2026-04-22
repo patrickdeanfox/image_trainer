@@ -670,8 +670,8 @@ class TrainerGUI:
             row=1, column=2, sticky="w", padx=PAD
         )
         ttk.Checkbutton(
-            oom, text="Text-encoder LoRA (not yet supported)",
-            variable=self.te_lora_var, state="disabled",
+            oom, text="Text-encoder LoRA (higher quality, slower)",
+            variable=self.te_lora_var,
         ).grid(row=1, column=3, sticky="w", padx=PAD)
 
         # --- schedule ---

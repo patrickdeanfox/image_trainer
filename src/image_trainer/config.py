@@ -53,6 +53,16 @@ class Project:
     lora_rank: int = 32
     lora_alpha: int = 32
     train_text_encoder: bool = False  # toggled in GUI; off by default to save VRAM
+    # TE LoRA-specific knobs. Only meaningful when train_text_encoder=True.
+    # Kept separate from UNet LoRA because TEs use less capacity (so lower
+    # rank) and are more sensitive to learning rate (so lower LR).
+    te_lora_rank: int = 8
+    te_lora_alpha: int = 8
+    te_learning_rate: float = 5e-5
+    # Gradient checkpointing on both text encoders. Required to fit TE LoRA
+    # on a 10 GB card; costs ~10% step time. Disable on 16 GB+ for a speed
+    # bump.
+    te_gradient_checkpointing: bool = True
 
     # training - loss / optimizer / schedule (quality)
     learning_rate: float = 1e-4

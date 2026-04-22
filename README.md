@@ -89,7 +89,7 @@ trainer gui
 
 The wizard has a **project browser** at the top (create / switch / refresh) and six step tabs:
 
-1. **Settings** — trigger word, base checkpoint, and the curated OOM / quality knobs: **resolution**, **LoRA rank**, **gradient accumulation**, **xformers on/off**, **text-encoder LoRA on/off**, plus training length + checkpoint frequency + validation frequency.
+1. **Settings** — trigger word, base checkpoint, and the curated OOM / quality knobs: **resolution**, **LoRA rank**, **gradient accumulation**, **xformers on/off**, **text-encoder LoRA on/off** (see [Text-encoder LoRA](#text-encoder-lora) below), plus training length + checkpoint frequency + validation frequency.
 2. **Import & Resize** — pick a source folder, run the copy + resize.
 3. **Caption** — run the configured captioner (BLIP / WD14 / both).
 4. **Review** — step through each processed image: include/exclude toggle, editable caption, quick-tag chips, per-image resolution/brightness/sharpness stats, and near-duplicate warnings. Keyboard: `←`/`→` navigate, `I` toggle include, `Ctrl+S` save. Training only uses `include=True` images.
@@ -166,6 +166,28 @@ Tips that consistently improve final-image quality:
 - **Negative prompt matters.** Start with `low quality, blurry, extra fingers, deformed` and iterate.
 - **Watch the validation images.** If the subject starts melting after step N, you've likely overtrained — shorten `max_train_steps` or lower the LR.
 
+### Text-encoder LoRA
+
+Off by default because it's the single biggest VRAM-and-quality lever in the pipeline. Flip the **Text-encoder LoRA** checkbox in the Train tab (or set `"train_text_encoder": true` in `config.json`) to enable it.
+
+What changes when it's on:
+
+- Both CLIP text encoders stay resident on GPU for the whole run; captions are re-encoded every step so the LoRA weight updates take effect. The cached-embedding path is bypassed.
+- Only VAE latents are cached; the VAE is still offloaded (VAE doesn't train, so this is pure VRAM savings).
+- A preflight step runs one forward+backward before the main loop and prints peak VRAM usage. If it's over 9.5 GB, you'll get a warning suggesting which knobs to drop before the real run wastes four hours.
+- The exported LoRA now includes `text_encoder/` and `text_encoder_2/` subdirectories under `<project>/lora/` alongside `unet/`. `trainer generate` loads all three automatically; no extra flags.
+
+Quality tradeoff: noticeably better subject identity (face, micro-features) and prompt-following on subject-adjacent concepts. VRAM tradeoff: roughly +2 GB peak on the 10 GB budget. If it OOMs, drop `resolution` to 768 first; that always fits.
+
+TE-LoRA-specific tunables, all in `config.json` (no GUI — power-user knobs):
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `te_lora_rank` | 8 | TEs need less capacity than the UNet; going higher rarely helps. |
+| `te_lora_alpha` | 8 | Keep equal to `te_lora_rank`. |
+| `te_learning_rate` | 5e-5 | ~½ the UNet LR; TEs are more sensitive and can destabilize at 1e-4. |
+| `te_gradient_checkpointing` | true | Required to fit on 10 GB. Disable on 16 GB+ for ~10% speedup. |
+
 ---
 
 ## Overnight workflow
@@ -184,12 +206,13 @@ Designed to be reliable across an 8-hour run without babysitting:
 
 If `trainer train` crashes with CUDA OOM on 10 GB:
 
-1. Lower `resolution` to **768** in Settings, retrain from scratch.
-2. Bump `gradient_accumulation_steps` to 2 or 4 (trades wall time for memory).
-3. Drop `lora_rank` from 32 to 16 (marginal quality hit).
-4. Disable `xformers` if a version mismatch is the culprit — the loop falls back to PyTorch sdpa.
-5. Make sure nothing else is using the GPU (browser hardware accel, another ML process).
-6. As a last resort, switch `base_model_path` to an SD 1.5 checkpoint — the pipeline code is the same, but your LoRA will be SD1.5-compatible, not SDXL-compatible.
+1. If Text-encoder LoRA is on, that's the likely culprit — drop `resolution` to 768, or turn TE LoRA off to confirm.
+2. Lower `resolution` to **768** in Settings, retrain from scratch.
+3. Bump `gradient_accumulation_steps` to 2 or 4 (trades wall time for memory).
+4. Drop `lora_rank` from 32 to 16 (marginal quality hit).
+5. Disable `xformers` if a version mismatch is the culprit — the loop falls back to PyTorch sdpa.
+6. Make sure nothing else is using the GPU (browser hardware accel, another ML process).
+7. As a last resort, switch `base_model_path` to an SD 1.5 checkpoint — the pipeline code is the same, but your LoRA will be SD1.5-compatible, not SDXL-compatible.
 
 ---
 

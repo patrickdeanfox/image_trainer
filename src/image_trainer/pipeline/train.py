@@ -150,26 +150,20 @@ def _validate_or_reset_cache(project: Project) -> None:
     marker_path.write_text(json.dumps(current, indent=2))
 
 
-def _cache_embeddings_and_latents(project: Project, pipe, device: str = "cuda") -> list[dict]:
-    import torch
-    from PIL import Image
-    from torchvision import transforms
+def _select_training_pngs(project: Project) -> list[Path]:
+    """List processed PNGs, filtered by the pre-training review.
 
+    Raises:
+        RuntimeError: if the project has no processed images or every image
+            was excluded in the Review tab.
+    """
     from . import review as review_mod
-
-    _validate_or_reset_cache(project)
-    (project.cache_dir / "latents").mkdir(parents=True, exist_ok=True)
-    (project.cache_dir / "embeds").mkdir(parents=True, exist_ok=True)
 
     all_pngs = sorted(project.processed_dir.glob("*.png"))
     if not all_pngs:
         raise RuntimeError(
             f"No .png files in {project.processed_dir}. Run prep + caption first."
         )
-
-    # Honor the pre-training review: only train on images marked include=True.
-    # If review.json doesn't exist, load() seeds everything as included, so
-    # projects that skipped the Review tab still train on everything.
     review = review_mod.load(project)
     included = set(review.stems_for_training())
     pngs = [p for p in all_pngs if p.stem in included]
@@ -180,7 +174,26 @@ def _cache_embeddings_and_latents(project: Project, pipe, device: str = "cuda") 
         )
     excluded = len(all_pngs) - len(pngs)
     if excluded > 0:
-        print(f"Review: training on {len(pngs)}/{len(all_pngs)} images ({excluded} excluded).", flush=True)
+        print(
+            f"Review: training on {len(pngs)}/{len(all_pngs)} images "
+            f"({excluded} excluded).",
+            flush=True,
+        )
+    return pngs
+
+
+def _cache_vae_latents(project: Project, pipe, pngs: list[Path], device: str) -> dict[str, Path]:
+    """Encode each training image through the VAE once, cache to disk, then
+    move the VAE to CPU. Used in both the cached-embeddings path and the
+    live-encoders path — VAE never trains, so latents are always cacheable.
+
+    Returns a mapping ``{stem: latent_path}``.
+    """
+    import torch
+    from PIL import Image
+    from torchvision import transforms
+
+    (project.cache_dir / "latents").mkdir(parents=True, exist_ok=True)
 
     image_tf = transforms.Compose(
         [
@@ -194,27 +207,48 @@ def _cache_embeddings_and_latents(project: Project, pipe, device: str = "cuda") 
     )
 
     vae = pipe.vae.to(device, dtype=torch.float32)
-    tokenizer = pipe.tokenizer
-    tokenizer_2 = pipe.tokenizer_2
-    te1 = pipe.text_encoder.to(device)
-    te2 = pipe.text_encoder_2.to(device)
-
-    entries: list[dict] = []
+    latent_paths: dict[str, Path] = {}
     total = len(pngs)
     for idx, png in enumerate(pngs, start=1):
         stem = png.stem
         latent_path = project.cache_dir / "latents" / f"{stem}.pt"
-        embed_path = project.cache_dir / "embeds" / f"{stem}.pt"
-        did_work = False
-
         if not latent_path.exists():
             img = Image.open(png).convert("RGB")
             tensor = image_tf(img).unsqueeze(0).to(device, dtype=torch.float32)
             with torch.no_grad():
                 latent = vae.encode(tensor).latent_dist.sample() * vae.config.scaling_factor
             torch.save(latent.squeeze(0).cpu(), latent_path)
-            did_work = True
+            print(f"caching latents {idx}/{total}: {png.name}", flush=True)
+        latent_paths[stem] = latent_path
 
+    pipe.vae.to("cpu")
+    del vae
+    torch.cuda.empty_cache()
+    return latent_paths
+
+
+def _cache_text_embeddings(project: Project, pipe, pngs: list[Path], device: str) -> dict[str, Path]:
+    """Encode each caption through both text encoders once, cache to disk,
+    then move the TEs to CPU. Only called when ``train_text_encoder=False`` —
+    with TE LoRA on, captions have to be re-encoded every step against the
+    current LoRA weights.
+
+    Returns a mapping ``{stem: embed_path}``.
+    """
+    import torch
+
+    (project.cache_dir / "embeds").mkdir(parents=True, exist_ok=True)
+
+    tokenizer = pipe.tokenizer
+    tokenizer_2 = pipe.tokenizer_2
+    te1 = pipe.text_encoder.to(device)
+    te2 = pipe.text_encoder_2.to(device)
+
+    embed_paths: dict[str, Path] = {}
+    total = len(pngs)
+    for idx, png in enumerate(pngs, start=1):
+        stem = png.stem
+        embed_path = project.cache_dir / "embeds" / f"{stem}.pt"
         if not embed_path.exists():
             txt_path = png.with_suffix(".txt")
             caption = txt_path.read_text().strip() if txt_path.exists() else project.trigger_word
@@ -247,19 +281,156 @@ def _cache_embeddings_and_latents(project: Project, pipe, device: str = "cuda") 
                 },
                 embed_path,
             )
-            did_work = True
+            print(f"caching embeds {idx}/{total}: {png.name}", flush=True)
+        embed_paths[stem] = embed_path
 
-        entries.append({"latent": latent_path, "embed": embed_path, "stem": stem})
-        if did_work:
-            print(f"caching {idx}/{total}: {png.name}", flush=True)
-
-    # Free VAE + TEs from GPU; the training loop doesn't need them.
-    pipe.vae.to("cpu")
     pipe.text_encoder.to("cpu")
     pipe.text_encoder_2.to("cpu")
-    del vae, te1, te2
+    del te1, te2
     torch.cuda.empty_cache()
+    return embed_paths
+
+
+def _cache_embeddings_and_latents(project: Project, pipe, device: str = "cuda") -> list[dict]:
+    """Cached-embeddings path: latents *and* text embeds pre-computed once,
+    then both VAE and TEs offloaded to CPU. Used when ``train_text_encoder``
+    is False (the default); returns a list of
+    ``{"latent": Path, "embed": Path, "stem": str}`` ready for the training
+    loop's per-step ``torch.load`` calls.
+    """
+    _validate_or_reset_cache(project)
+    pngs = _select_training_pngs(project)
+    latent_paths = _cache_vae_latents(project, pipe, pngs, device)
+    embed_paths = _cache_text_embeddings(project, pipe, pngs, device)
+    return [
+        {"latent": latent_paths[p.stem], "embed": embed_paths[p.stem], "stem": p.stem}
+        for p in pngs
+    ]
+
+
+def _build_live_dataset(project: Project, pipe, device: str) -> list[dict]:
+    """Live-encoders path: cache only VAE latents (VAE still doesn't train),
+    but keep both text encoders resident on GPU and pre-tokenize every
+    caption. The training loop encodes captions fresh every step so TE LoRA
+    weight updates take effect; tokenization itself is cheap and only needs
+    to happen once.
+
+    Returns a list of dicts with keys:
+        ``"latent"`` -> Path to cached latent .pt
+        ``"tokens1"`` -> torch.LongTensor [max_length] for text_encoder
+        ``"tokens2"`` -> torch.LongTensor [max_length] for text_encoder_2
+        ``"caption"`` -> str (kept for debug; not used per-step)
+        ``"stem"``    -> image stem
+    """
+    _validate_or_reset_cache(project)
+    pngs = _select_training_pngs(project)
+    latent_paths = _cache_vae_latents(project, pipe, pngs, device)
+
+    tokenizer = pipe.tokenizer
+    tokenizer_2 = pipe.tokenizer_2
+    entries: list[dict] = []
+    for png in pngs:
+        txt_path = png.with_suffix(".txt")
+        caption = txt_path.read_text().strip() if txt_path.exists() else project.trigger_word
+        tok1 = tokenizer(
+            caption,
+            padding="max_length",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        tok2 = tokenizer_2(
+            caption,
+            padding="max_length",
+            max_length=tokenizer_2.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        entries.append(
+            {
+                "latent": latent_paths[png.stem],
+                "tokens1": tok1.input_ids.squeeze(0),
+                "tokens2": tok2.input_ids.squeeze(0),
+                "caption": caption,
+                "stem": png.stem,
+            }
+        )
     return entries
+
+
+def _encode_live(te1, te2, tokens1, tokens2):
+    """Run both text encoders on already-tokenized captions to produce the
+    tensors the SDXL UNet forward expects.
+
+    ``tokens1`` / ``tokens2`` are [B, max_length] LongTensors on the same
+    device as the encoders. Returns ``(prompt_embeds, pooled)``:
+        ``prompt_embeds`` -> [B, 77, 2048]  (concat of penultimate hidden
+                                             states, features last)
+        ``pooled``        -> [B, 1280]      (text_encoder_2's pooled output)
+
+    Unlike the cache path's `_cache_text_embeddings`, this function runs
+    under autograd: gradients flow back into the wrapped TE LoRA modules.
+    """
+    import torch
+
+    out1 = te1(tokens1, output_hidden_states=True)
+    out2 = te2(tokens2, output_hidden_states=True)
+    hidden1 = out1.hidden_states[-2]
+    hidden2 = out2.hidden_states[-2]
+    prompt_embeds = torch.cat([hidden1, hidden2], dim=-1)
+    pooled = out2[0]
+    return prompt_embeds, pooled
+
+
+def _wrap_text_encoders_with_lora(pipe, project: Project):
+    """Install PEFT LoRA adapters onto both text encoders in-place on ``pipe``.
+
+    Uses the HF-standard CLIP LoRA target set. Separate (lower) rank from
+    UNet because TEs need less capacity and tend to overfit faster.
+    Optionally enables gradient checkpointing on each encoder to fit 10 GB.
+
+    Mutates ``pipe.text_encoder`` and ``pipe.text_encoder_2`` so validation
+    inference (which goes through the diffusers pipeline) sees the wrapped
+    encoders automatically. Returns ``(te1, te2)`` — the same objects.
+    """
+    from peft import LoraConfig, get_peft_model
+
+    te_config = LoraConfig(
+        r=project.te_lora_rank,
+        lora_alpha=project.te_lora_alpha,
+        init_lora_weights="gaussian",
+        target_modules=["q_proj", "v_proj", "k_proj", "out_proj"],
+    )
+    te1 = get_peft_model(pipe.text_encoder, te_config)
+    te2 = get_peft_model(pipe.text_encoder_2, te_config)
+    pipe.text_encoder = te1
+    pipe.text_encoder_2 = te2
+
+    if project.te_gradient_checkpointing:
+        for name, te in (("text_encoder", te1), ("text_encoder_2", te2)):
+            base = getattr(te, "base_model", te)
+            target = getattr(base, "model", base)  # PEFT wraps .base_model.model
+            enable = getattr(target, "gradient_checkpointing_enable", None)
+            if callable(enable):
+                try:
+                    enable()
+                except Exception as e:
+                    print(
+                        f"  {name}: gradient_checkpointing_enable failed "
+                        f"({e}); continuing without.",
+                        flush=True,
+                    )
+            else:
+                print(
+                    f"  {name}: gradient_checkpointing_enable not available "
+                    f"on this transformers version; skipping.",
+                    flush=True,
+                )
+
+    print("TE LoRA trainable parameters:", flush=True)
+    te1.print_trainable_parameters()
+    te2.print_trainable_parameters()
+    return te1, te2
 
 
 def _find_latest_checkpoint(ckpt_dir: Path) -> Optional[Path]:
@@ -297,19 +468,25 @@ def _run_validation(project: Project, pipe, trained_unet, step: int, device: str
       still points at the un-wrapped UNet, so calling `pipe(...)` directly
       would *not* reflect training progress. We temporarily swap `pipe.unet`
       with the unwrapped-from-accelerator trained model.
-    - VAE + text encoders were moved to CPU in `_cache_embeddings_and_latents`.
-      For validation inference we need them on GPU. We move them back for the
-      duration of this call and return them to CPU afterward so the training
-      loop's memory budget is preserved.
+    - The VAE is moved to CPU in both training paths. For validation
+      inference we move it back to GPU, then back to CPU afterwards to
+      preserve the training-time memory budget.
+    - The text encoders stay on GPU when ``train_text_encoder`` is on (they
+      must be resident for the per-step forwards), so we skip the VAE-style
+      ping-pong for them in that mode. When TE LoRA is off, they were moved
+      to CPU during cache building and we bring them back for validation
+      just like the VAE.
     """
     import torch
 
+    te_on_gpu = project.train_text_encoder
     original_unet = pipe.unet
     try:
         pipe.unet = trained_unet
         pipe.vae.to(device)
-        pipe.text_encoder.to(device)
-        pipe.text_encoder_2.to(device)
+        if not te_on_gpu:
+            pipe.text_encoder.to(device)
+            pipe.text_encoder_2.to(device)
 
         prompt = project.effective_validation_prompt()
         with torch.no_grad():
@@ -331,9 +508,83 @@ def _run_validation(project: Project, pipe, trained_unet, step: int, device: str
         # Return to the training-time memory layout.
         pipe.unet = original_unet
         pipe.vae.to("cpu")
-        pipe.text_encoder.to("cpu")
-        pipe.text_encoder_2.to("cpu")
+        if not te_on_gpu:
+            pipe.text_encoder.to("cpu")
+            pipe.text_encoder_2.to("cpu")
         torch.cuda.empty_cache()
+
+
+# ---------- TE LoRA preflight ----------
+
+def _preflight_te_lora(
+    project: Project,
+    unet,
+    te1,
+    te2,
+    noise_scheduler,
+    base_time_ids,
+    sample_entry: dict,
+    device,
+) -> None:
+    """One forward+backward on a real entry to measure peak VRAM before the
+    training loop starts. Prints the peak, warns if >9.5 GB, does not
+    auto-change settings — the user asked for explicit knobs, not surprise
+    fallbacks.
+    """
+    import torch
+
+    torch.cuda.reset_peak_memory_stats(device)
+    unet.train()
+    te1.train()
+    te2.train()
+
+    latent = torch.load(sample_entry["latent"]).to(device, dtype=torch.float32).unsqueeze(0)
+    tokens1 = sample_entry["tokens1"].to(device).unsqueeze(0)
+    tokens2 = sample_entry["tokens2"].to(device).unsqueeze(0)
+    prompt_embeds, pooled = _encode_live(te1, te2, tokens1, tokens2)
+    bsz = latent.shape[0]
+    time_ids = base_time_ids.unsqueeze(0).expand(bsz, -1)
+
+    noise = torch.randn_like(latent)
+    timesteps = torch.randint(
+        0, noise_scheduler.config.num_train_timesteps, (bsz,), device=device
+    ).long()
+    noisy = noise_scheduler.add_noise(latent, noise, timesteps)
+
+    pred = unet(
+        noisy,
+        timesteps,
+        encoder_hidden_states=prompt_embeds,
+        added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
+    ).sample
+    loss = ((pred.float() - noise.float()) ** 2).mean()
+    loss.backward()
+
+    # Clear the grads so the real first step starts from a clean slate.
+    for p in unet.parameters():
+        if p.grad is not None:
+            p.grad = None
+    for p in te1.parameters():
+        if p.grad is not None:
+            p.grad = None
+    for p in te2.parameters():
+        if p.grad is not None:
+            p.grad = None
+
+    peak_gb = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+    total_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
+    print(
+        f"TE LoRA preflight: peak VRAM ~{peak_gb:.2f} GB of {total_gb:.2f} GB total.",
+        flush=True,
+    )
+    if peak_gb > 9.5:
+        print(
+            "  WARNING: peak VRAM is close to / over 10 GB. If this run OOMs, "
+            "try in config.json: drop `resolution` to 768, drop `lora_rank` to 16, "
+            "or set `te_gradient_checkpointing` to true if it's off.",
+            flush=True,
+        )
+    torch.cuda.empty_cache()
 
 
 # ---------- main ----------
@@ -364,13 +615,6 @@ def train_lora(
         )
     if not torch.cuda.is_available():
         raise RuntimeError("train_lora requires a CUDA GPU.")
-    if project.train_text_encoder:
-        # Check early so we never allocate text-encoder LoRA weights on GPU.
-        raise NotImplementedError(
-            "train_text_encoder=True is not wired up: it requires re-encoding "
-            "captions every step, which is incompatible with the cached-embeddings "
-            "strategy used in this training loop. Leave it off for now."
-        )
 
     project.ensure_dirs()
     log_path = project.logs_dir / f"training_{int(time.time())}.log"
@@ -392,8 +636,19 @@ def train_lora(
             except Exception as e:
                 print(f"xformers unavailable ({e}); falling back to sdpa.", flush=True)
 
-        print("Caching latents + text embeddings (one-time per image)...", flush=True)
-        entries = _cache_embeddings_and_latents(project, pipe, device=str(device))
+        # Dispatch on `train_text_encoder`. The UNet-only path caches both
+        # latents AND text embeds once and offloads everything but the UNet;
+        # the TE-LoRA path caches only latents and keeps both text encoders
+        # resident (and trainable) on GPU.
+        if project.train_text_encoder:
+            print(
+                "TE LoRA enabled: caching latents only, keeping text encoders on GPU...",
+                flush=True,
+            )
+            entries = _build_live_dataset(project, pipe, device=str(device))
+        else:
+            print("Caching latents + text embeddings (one-time per image)...", flush=True)
+            entries = _cache_embeddings_and_latents(project, pipe, device=str(device))
         n = len(entries)
         if n == 0:
             raise RuntimeError("No training entries after caching; aborting.")
@@ -411,17 +666,42 @@ def train_lora(
         unet = get_peft_model(unet, lora_config)
         unet.print_trainable_parameters()
 
-        trainable_params = [p for p in unet.parameters() if p.requires_grad]
+        # TE LoRA adapters (only on the live-encoders path). Move TEs to
+        # fp32 on GPU first — same convention as the UNet; accelerator handles
+        # mixed-precision autocast around the fp32 master weights.
+        te1_lora = te2_lora = None
+        if project.train_text_encoder:
+            pipe.text_encoder.to(device, dtype=torch.float32)
+            pipe.text_encoder_2.to(device, dtype=torch.float32)
+            te1_lora, te2_lora = _wrap_text_encoders_with_lora(pipe, project)
+
+        # Two param groups so UNet LoRA and TE LoRA can have different LRs.
+        # TEs are more sensitive, so `te_learning_rate` defaults to ~½ of the
+        # UNet LR.
+        param_groups = [
+            {
+                "params": [p for p in unet.parameters() if p.requires_grad],
+                "lr": project.learning_rate,
+            }
+        ]
+        if te1_lora is not None:
+            param_groups.append(
+                {
+                    "params": [p for p in te1_lora.parameters() if p.requires_grad]
+                    + [p for p in te2_lora.parameters() if p.requires_grad],
+                    "lr": project.te_learning_rate,
+                }
+            )
 
         if project.use_8bit_optim:
             try:
                 import bitsandbytes as bnb
-                optimizer = bnb.optim.AdamW8bit(trainable_params, lr=project.learning_rate)
+                optimizer = bnb.optim.AdamW8bit(param_groups, lr=project.learning_rate)
             except ImportError:
                 print("bitsandbytes missing; using torch.optim.AdamW.", flush=True)
-                optimizer = torch.optim.AdamW(trainable_params, lr=project.learning_rate)
+                optimizer = torch.optim.AdamW(param_groups, lr=project.learning_rate)
         else:
-            optimizer = torch.optim.AdamW(trainable_params, lr=project.learning_rate)
+            optimizer = torch.optim.AdamW(param_groups, lr=project.learning_rate)
 
         noise_scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
         max_steps = max_steps_override or project.max_train_steps
@@ -433,7 +713,20 @@ def train_lora(
             num_training_steps=max_steps,
         )
 
-        unet, optimizer, lr_scheduler = accelerator.prepare(unet, optimizer, lr_scheduler)
+        # Pass TEs through accelerator.prepare too so mixed-precision wrapping
+        # and save_state/load_state cover them automatically.
+        if te1_lora is not None:
+            unet, te1_lora, te2_lora, optimizer, lr_scheduler = accelerator.prepare(
+                unet, te1_lora, te2_lora, optimizer, lr_scheduler
+            )
+            # prepare() returns new wrapper objects; keep the pipe pointers in
+            # sync so validation inference hits the prepared modules.
+            pipe.text_encoder = te1_lora
+            pipe.text_encoder_2 = te2_lora
+        else:
+            unet, optimizer, lr_scheduler = accelerator.prepare(
+                unet, optimizer, lr_scheduler
+            )
 
         # Resume
         start_step = 0
@@ -493,6 +786,26 @@ def train_lora(
             return ckpt_path
 
         unet.train()
+        if te1_lora is not None:
+            te1_lora.train()
+            te2_lora.train()
+
+        # Preflight VRAM check when TE LoRA is on: do one forward+backward on
+        # a synthetic batch, report peak memory, and warn loudly if we're
+        # over budget. Cheap insurance against a 4-hour run that OOMs at
+        # step 1.
+        if te1_lora is not None and start_step == 0:
+            try:
+                _preflight_te_lora(
+                    project, unet, te1_lora, te2_lora, noise_scheduler,
+                    base_time_ids, entries[0], device,
+                )
+            except Exception as e:
+                print(
+                    f"TE LoRA preflight check failed ({e}); continuing anyway.",
+                    flush=True,
+                )
+
         step = start_step
         t0 = time.time()
         while step < max_steps:
@@ -503,9 +816,23 @@ def train_lora(
                 cursor = 0
 
             latent = torch.load(entry["latent"]).to(device, dtype=torch.float32).unsqueeze(0)
-            embed_blob = torch.load(entry["embed"])
-            prompt_embeds = embed_blob["prompt_embeds"].to(device, dtype=torch.float32).unsqueeze(0)
-            pooled = embed_blob["pooled"].to(device, dtype=torch.float32).unsqueeze(0)
+            if te1_lora is not None:
+                # Live-encoders path: re-encode captions every step so TE
+                # LoRA weight updates take effect. Tokens were cached at
+                # dataset-build time (cheap); only the TE forward is hot.
+                tokens1 = entry["tokens1"].to(device).unsqueeze(0)
+                tokens2 = entry["tokens2"].to(device).unsqueeze(0)
+                prompt_embeds, pooled = _encode_live(
+                    te1_lora, te2_lora, tokens1, tokens2
+                )
+            else:
+                embed_blob = torch.load(entry["embed"])
+                prompt_embeds = embed_blob["prompt_embeds"].to(
+                    device, dtype=torch.float32
+                ).unsqueeze(0)
+                pooled = embed_blob["pooled"].to(
+                    device, dtype=torch.float32
+                ).unsqueeze(0)
             bsz = latent.shape[0]
             time_ids = base_time_ids.unsqueeze(0).expand(bsz, -1)
 
@@ -520,7 +847,10 @@ def train_lora(
             ).long()
             noisy_latents = noise_scheduler.add_noise(latent, noise, timesteps)
 
-            with accelerator.accumulate(unet):
+            accum_targets = [unet]
+            if te1_lora is not None:
+                accum_targets.extend([te1_lora, te2_lora])
+            with accelerator.accumulate(*accum_targets):
                 model_pred = unet(
                     noisy_latents,
                     timesteps,
@@ -577,11 +907,30 @@ def train_lora(
                 print("Graceful stop after checkpoint. Use --resume to continue.", flush=True)
                 break
 
-        # Export LoRA weights (portable diffusers PEFT format).
+        # Export LoRA weights in the diffusers multi-component layout:
+        #     <lora_dir>/unet/
+        #     <lora_dir>/text_encoder/        (only if TE LoRA was trained)
+        #     <lora_dir>/text_encoder_2/
+        # `pipe.load_lora_weights(lora_dir)` in generate.py dispatches
+        # automatically across whichever subdirectories exist, so no
+        # generate-side code change is needed.
         if project.lora_dir.exists():
             shutil.rmtree(project.lora_dir)
         project.lora_dir.mkdir(parents=True, exist_ok=True)
-        unwrapped = accelerator.unwrap_model(unet)
-        unwrapped.save_pretrained(str(project.lora_dir))
-        print(f"LoRA exported to {project.lora_dir}", flush=True)
+
+        unwrapped_unet = accelerator.unwrap_model(unet)
+        unwrapped_unet.save_pretrained(str(project.lora_dir / "unet"))
+        print(f"UNet LoRA exported to {project.lora_dir / 'unet'}", flush=True)
+
+        if te1_lora is not None:
+            unwrapped_te1 = accelerator.unwrap_model(te1_lora)
+            unwrapped_te2 = accelerator.unwrap_model(te2_lora)
+            unwrapped_te1.save_pretrained(str(project.lora_dir / "text_encoder"))
+            unwrapped_te2.save_pretrained(str(project.lora_dir / "text_encoder_2"))
+            print(
+                f"TE LoRA exported to {project.lora_dir / 'text_encoder'} "
+                f"and {project.lora_dir / 'text_encoder_2'}",
+                flush=True,
+            )
+
         return project.lora_dir
