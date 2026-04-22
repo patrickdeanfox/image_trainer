@@ -21,6 +21,9 @@ dependencies = [
 
 [project.optional-dependencies]
 xformers = ["xformers"]
+# WD14 NSFW-aware captioner. `onnxruntime` for CPU, `onnxruntime-gpu` for CUDA.
+# huggingface_hub downloads the model weights + tag CSV on first use.
+wd14 = ["onnxruntime", "huggingface_hub"]
 
 [project.scripts]
 trainer = "image_trainer.cli:main"

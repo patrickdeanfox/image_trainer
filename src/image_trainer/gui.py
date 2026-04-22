@@ -33,7 +33,18 @@ from .pipeline import insights, review as review_mod
 # ---------- subprocess runner ----------
 
 class CLIRunner:
-    """Wraps a single Popen so the GUI can stop it via SIGINT."""
+    """Manages the currently-running ``trainer`` subprocess for the GUI.
+
+    A single :class:`CLIRunner` is owned by the :class:`TrainerGUI` instance
+    and reused across actions (prep / caption / train / generate). Holding
+    the :class:`subprocess.Popen` on ``self`` lets the Stop (graceful)
+    button deliver a real SIGINT — something the earlier design couldn't do
+    because ``Popen`` lived only inside a worker thread's local scope.
+
+    A background thread tails the subprocess's combined stdout/stderr and
+    forwards every line to :attr:`log_queue`; the Tk main loop drains the
+    queue on a timer (:meth:`TrainerGUI._drain_log`) so the UI never blocks.
+    """
 
     def __init__(self, log_queue: "queue.Queue[str]") -> None:
         self.log_queue = log_queue
@@ -41,9 +52,18 @@ class CLIRunner:
         self.thread: Optional[threading.Thread] = None
 
     def is_running(self) -> bool:
+        """True while the pump thread is still alive (i.e. the subprocess
+        hasn't exited and been joined)."""
         return self.thread is not None and self.thread.is_alive()
 
     def start(self, args: list[str]) -> None:
+        """Spawn ``python -m image_trainer.cli <args>`` and start the pump thread.
+
+        Raises :class:`RuntimeError` if another job is already running — the
+        GUI surfaces this as a "Busy" message box rather than quietly
+        queueing, because two training jobs on the same project at once
+        would clobber each other's checkpoints.
+        """
         if self.is_running():
             raise RuntimeError("another step is still running")
         cmd = [sys.executable, "-m", "image_trainer.cli", *args]
@@ -68,9 +88,14 @@ class CLIRunner:
         self.thread.start()
 
     def stop_graceful(self) -> bool:
-        """Send SIGINT (SIGBREAK on Windows) so the training loop's signal
-        handler writes a checkpoint and exits cleanly. Returns True if a signal
-        was delivered."""
+        """Signal the running subprocess to checkpoint and exit cleanly.
+
+        The training loop traps SIGINT/SIGTERM and writes a final checkpoint
+        before exiting, so this is how the GUI's "Stop (graceful)" button
+        preserves partial overnight progress. On Windows we send
+        ``CTRL_BREAK_EVENT`` since the CRT doesn't translate SIGINT the
+        same way. Returns ``True`` if a signal was delivered.
+        """
         if not self.is_running() or self.proc is None:
             return False
         try:
@@ -86,10 +111,17 @@ class CLIRunner:
 
 # ---------- styling ----------
 
+#: Uniform widget padding in pixels. Used everywhere so adjusting it in one
+#: place rescales the whole layout.
 PAD = 8
 
 
 def _apply_style(root: tk.Tk) -> None:
+    """Pick the ``clam`` ttk theme and tweak a few shared widget styles.
+
+    Kept minimal and asset-free so the GUI boots on any Python with Tk
+    (no Pillow-ImageTk asset loading at startup, no custom fonts).
+    """
     style = ttk.Style(root)
     try:
         style.theme_use("clam")
@@ -108,6 +140,17 @@ def _apply_style(root: tk.Tk) -> None:
 # ---------- GUI ----------
 
 class TrainerGUI:
+    """The main Tkinter window.
+
+    Owns the :class:`CLIRunner`, the shared :mod:`queue.Queue` that the
+    subprocess pump writes into, and all per-tab widgets. Every button
+    handler on this class is either a layout builder (``_build_*_tab``) or
+    a thin dispatcher that constructs a CLI argv list and calls
+    :meth:`_spawn`. The GUI intentionally owns no model, training, or
+    review persistence logic — that lives in the CLI and pipeline modules,
+    so the two surfaces never drift.
+    """
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("image_trainer")
@@ -454,9 +497,12 @@ class TrainerGUI:
         ttk.Button(btns, text="Resume training", command=self._on_train_resume).pack(side="left", padx=PAD)
         ttk.Button(btns, text="Stop (graceful)", command=self._on_train_stop).pack(side="left")
 
-        ttk.Button(f, text="Open validation previews", command=self._open_validation_dir).grid(
-            row=6, column=0, sticky="w", pady=PAD
-        )
+        log_btns = ttk.Frame(f)
+        log_btns.grid(row=6, column=0, columnspan=4, sticky="w", pady=PAD)
+        ttk.Button(log_btns, text="Open logs folder", command=self._open_logs_dir).pack(side="left")
+        ttk.Button(log_btns, text="Open validation previews", command=self._open_validation_dir).pack(side="left", padx=PAD)
+        ttk.Button(log_btns, text="Open latest log", command=self._open_latest_log).pack(side="left")
+        ttk.Button(log_btns, text="Open journal", command=self._open_journal).pack(side="left", padx=(PAD, 0))
 
     def _build_generate_tab(self) -> None:
         f = self.tab_generate
@@ -678,15 +724,22 @@ class TrainerGUI:
         self._rebuild_chips(self.current_project.prompt_chips if self.current_project else [])
 
     def _rebuild_chips(self, chips: list) -> None:
+        """Redraw the quick-tag chips bar from `chips` (a list of strings).
+
+        The default chip palette in :attr:`Project.prompt_chips` includes
+        framing, lighting, pose, clothing (SFW + NSFW), and camera tags —
+        edit that list in the project's ``config.json`` to customize.
+        """
         for w in self.review_chips_frame.winfo_children():
             w.destroy()
         if not chips:
             ttk.Label(self.review_chips_frame, text="(no chips configured)").pack(anchor="w")
             return
-        # Wrap chips into rows of ~6.
+        # Wrap chips into rows of ~10 so a large palette (60+) stays compact.
+        per_row = 10
         row = None
         for i, chip in enumerate(chips):
-            if i % 6 == 0:
+            if i % per_row == 0:
                 row = ttk.Frame(self.review_chips_frame)
                 row.pack(fill="x")
             ttk.Button(row, text=chip, command=lambda c=chip: self._append_chip(c)).pack(
@@ -843,6 +896,37 @@ class TrainerGUI:
             return
         _open_folder(self.current_project.validation_dir)
 
+    def _open_logs_dir(self) -> None:
+        if not self.current_project:
+            return
+        _open_folder(self.current_project.logs_dir)
+
+    def _open_latest_log(self) -> None:
+        """Open the most recent ``training_<ts>.log`` in the OS default viewer.
+
+        Handy when the GUI's live Log pane has scrolled past something you
+        want to search, or when training has been running for hours.
+        """
+        if not self.current_project:
+            return
+        logs = list(self.current_project.logs_dir.glob("training_*.log"))
+        if not logs:
+            messagebox.showinfo("No logs yet", "No training_*.log files have been written yet.")
+            return
+        # Sort by mtime rather than name — filenames are ISO-timestamped
+        # today, but mtime is robust to future format changes.
+        logs.sort(key=lambda p: p.stat().st_mtime)
+        _open_file(logs[-1])
+
+    def _open_journal(self) -> None:
+        """Open ``logs/journal.txt`` — one line per training run."""
+        if not self.current_project:
+            return
+        journal = self.current_project.logs_dir / "journal.txt"
+        if not journal.exists():
+            journal.write_text("")
+        _open_file(journal)
+
     # ---- command handlers ----
 
     def _require_project(self) -> Optional[Project]:
@@ -998,14 +1082,38 @@ def _ask_string(parent: tk.Tk, title: str, prompt: str) -> str:
     return simpledialog.askstring(title, prompt, parent=parent) or ""
 
 
+def _platform_open(path: Path) -> None:
+    """Best-effort 'open in default app' across OSes. Falls back to a
+    message box when no opener is available (e.g. a minimal Linux box with
+    no ``xdg-open``) so the Tk callback never crashes with an uncaught
+    ``FileNotFoundError``."""
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        elif sys.platform.startswith("linux"):
+            subprocess.Popen(["xdg-open", str(path)])
+        elif sys.platform.startswith("win"):
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        else:
+            raise RuntimeError(f"Unsupported platform: {sys.platform}")
+    except FileNotFoundError:
+        messagebox.showinfo(
+            "Open failed",
+            f"No system opener available. Path:\n{path}",
+        )
+    except Exception as e:
+        messagebox.showerror("Open failed", f"{e}\nPath: {path}")
+
+
 def _open_folder(path: Path) -> None:
+    """Reveal `path` in the OS file manager. Creates the folder if missing."""
     path.mkdir(parents=True, exist_ok=True)
-    if sys.platform == "darwin":
-        subprocess.Popen(["open", str(path)])
-    elif sys.platform.startswith("linux"):
-        subprocess.Popen(["xdg-open", str(path)])
-    elif sys.platform.startswith("win"):
-        os.startfile(str(path))  # type: ignore[attr-defined]
+    _platform_open(path)
+
+
+def _open_file(path: Path) -> None:
+    """Open a file in the OS default viewer (e.g. text editor for .log/.txt)."""
+    _platform_open(path)
 
 
 _TAB_INDEX = {
@@ -1017,6 +1125,20 @@ def launch(
     initial_project_dir: Optional[Path] = None,
     initial_tab: Optional[str] = None,
 ) -> None:
+    """Create the Tk root and run the main loop.
+
+    Args:
+        initial_project_dir: If set, the GUI opens this project on startup.
+            If the project lives outside the default :class:`ProjectsRoot`,
+            the GUI re-points its browser to the project's parent so the
+            combobox reflects what's open. This is how
+            ``trainer review <project>`` jumps straight to the right
+            project.
+        initial_tab: Optional key from :data:`_TAB_INDEX`
+            (``"settings"``, ``"prep"``, ``"caption"``, ``"review"``,
+            ``"train"``, ``"generate"``). The notebook is switched to that
+            tab after the window is fully laid out.
+    """
     root = tk.Tk()
     gui = TrainerGUI(root)
 

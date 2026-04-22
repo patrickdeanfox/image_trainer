@@ -1,3 +1,16 @@
+"""Inference step: load base SDXL + trained LoRA and generate images.
+
+Step 6 of the pipeline. Uses :meth:`StableDiffusionXLPipeline.enable_model_cpu_offload`
+to sequence sub-module loads across GPU and CPU so the whole pipeline fits
+on a 10 GB card. Outputs are grouped under ``outputs/<timestamp>/`` so
+separate generate calls don't overwrite each other.
+
+LoRA weights are loaded from the project's ``lora/`` directory (the PEFT-
+format export written by :func:`pipeline.train.train_lora`). Use the same
+base checkpoint the LoRA was trained on — mixing families produces
+surprising results.
+"""
+
 from __future__ import annotations
 
 import datetime as dt
@@ -15,8 +28,28 @@ def generate(
     guidance: float = 7.0,
     seed: int | None = None,
 ) -> list[Path]:
-    """Load base checkpoint + trained LoRA, generate n images, save under outputs/<timestamp>/.
-    Uses model CPU offload so it fits on ~10 GB. Returns paths to saved PNGs."""
+    """Generate `n` images with the project's base checkpoint + trained LoRA.
+
+    Args:
+        project: Loaded project; ``base_model_path`` and ``lora_dir`` must exist.
+        prompt: Positive text prompt. Include the project's trigger word.
+        negative: Negative prompt (``""`` disables it). The GUI pre-fills this
+            from :attr:`Project.default_negative_prompt`.
+        n: Number of images to generate. Each is run sequentially with the
+            same seed generator for determinism.
+        steps: Inference denoising steps. 25-40 is the usual useful range.
+        guidance: Classifier-free guidance scale. 5-7 for photorealistic
+            checkpoints, 7-9 for more stylized ones.
+        seed: Optional integer seed. ``None`` = non-deterministic.
+
+    Returns:
+        Paths to the saved PNGs under ``outputs/<timestamp>/``.
+
+    Raises:
+        ValueError: if the project has no base checkpoint configured.
+        FileNotFoundError: if the project's ``lora/`` directory is empty
+            (i.e. :func:`train_lora` hasn't run yet).
+    """
     import torch
     from diffusers import StableDiffusionXLPipeline
 

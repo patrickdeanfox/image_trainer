@@ -16,13 +16,29 @@ pip install -e .
 
 # Strongly recommended on a 10 GB GPU
 pip install xformers bitsandbytes
+
+# Optional but recommended for NSFW / adult person LoRAs — enables the WD14
+# booru-style tagger, which is much more candid than BLIP about body,
+# anatomy, clothing, and pose. See "Captioning" below.
+pip install -e ".[wd14]"          # or: pip install onnxruntime-gpu huggingface_hub
 ```
 
 Python 3.10+, a CUDA build of PyTorch, and an SDXL `.safetensors` base checkpoint you have downloaded locally.
 
 ## Base checkpoint
 
-You supply this. Download any SDXL-family `.safetensors` you want to build on top of (e.g. a realistic-photography variant from Civitai) and point the app at the file. The app never downloads checkpoints for you.
+You supply this. Download any SDXL-family `.safetensors` you want to build on top of and point the app at the file. The app never downloads checkpoints for you.
+
+Good starting points for realistic person LoRAs:
+
+| Base | Strength | Notes |
+| --- | --- | --- |
+| **Juggernaut XL** | Photorealism, skin, lighting. | SFW-leaning variants and NSFW-tuned variants exist — pick deliberately. |
+| **RealVisXL V4.0** | Very realistic portraits. | Clean SFW base; fine with moderate NSFW after a LoRA. |
+| **CyberRealistic XL** | Photorealism with NSFW headroom. | Handles nudity without fighting the prompt. |
+| **Pony Diffusion V6 XL** | NSFW anatomy / poses. | Different aesthetic; best paired with WD14 tags, not BLIP sentences. |
+
+Once you've downloaded one, either pass `--base /path/to/file.safetensors` to `trainer init` or set it on the **Settings** tab. For best quality, **use the same base at training time and generation time** — LoRAs trained on base A generally look off when applied to base B.
 
 ---
 
@@ -37,7 +53,8 @@ trainer init me --base ~/models/mySDXL.safetensors --trigger-word "ohwx person"
 # 2. Import source images and resize to 1024x1024.
 trainer prep me --source ~/Pictures/me_dataset
 
-# 3. Auto-caption with BLIP.
+# 3. Auto-caption. Default is "both" = BLIP sentence + WD14 tags.
+#    Override for a run with --mode blip | wd14 | both.
 trainer caption me
 
 # 4. Review each image: pick which to include, edit captions, add quick tags.
@@ -62,6 +79,8 @@ trainer generate me \
 
 `trainer list` prints all projects under the default root.
 
+`trainer clean me` deletes the regeneratable `cache/` and `checkpoints/` after you've finalised a LoRA — can easily reclaim 20–100 GB. Add `--all` to also drop `raw/` and `processed/`. The trained `lora/`, generated `outputs/`, `config.json`, and `logs/` are always preserved.
+
 ## Quickstart — GUI
 
 ```bash
@@ -72,9 +91,9 @@ The wizard has a **project browser** at the top (create / switch / refresh) and 
 
 1. **Settings** — trigger word, base checkpoint, and the curated OOM / quality knobs: **resolution**, **LoRA rank**, **gradient accumulation**, **xformers on/off**, **text-encoder LoRA on/off**, plus training length + checkpoint frequency + validation frequency.
 2. **Import & Resize** — pick a source folder, run the copy + resize.
-3. **Caption** — run BLIP.
+3. **Caption** — run the configured captioner (BLIP / WD14 / both).
 4. **Review** — step through each processed image: include/exclude toggle, editable caption, quick-tag chips, per-image resolution/brightness/sharpness stats, and near-duplicate warnings. Keyboard: `←`/`→` navigate, `I` toggle include, `Ctrl+S` save. Training only uses `include=True` images.
-5. **Train** — Start / Resume / Stop (graceful), live progress bar, optional journal note, shortcut to open the `validation/` folder so you can watch quality trend over the night.
+5. **Train** — Start / Resume / Stop (graceful), live progress bar, optional journal note, plus shortcuts to open the `logs/` folder, the latest `training_<ts>.log`, the `logs/journal.txt` training diary, and the `validation/` folder so you can watch quality trend over the night.
 6. **Generate** — prompt, negative (pre-filled from `default_negative_prompt`), N, steps, guidance, seed, and an "Open outputs folder" button.
 
 All heavy work is run through the CLI subprocess, so anything you can do in the GUI you can script.
@@ -100,6 +119,30 @@ All heavy work is run through the CLI subprocess, so anything you can do in the 
 ```
 
 ---
+
+## Captioning
+
+Step 3 writes one `.txt` caption next to each `processed/NNNN.png`. Training reads those captions, so caption quality is a direct lever on LoRA quality.
+
+Three modes, selected via `Project.captioner` (override per-run with `trainer caption <project> --mode ...`):
+
+| Mode | Output format | Best for |
+| --- | --- | --- |
+| `blip` | English sentence from BLIP-large. | Fully-clothed subjects; SFW lifestyle / portrait LoRAs. |
+| `wd14` | Danbooru-style tag list from WD14 (SmilingWolf). | Anime bases, NSFW subjects where anatomy/pose/clothing tags matter more than sentences. |
+| `both` (default) | BLIP sentence **+** WD14 tags concatenated after the trigger word. | Realistic person LoRAs, SFW **or** NSFW — broadest coverage. |
+
+Why WD14 for NSFW: BLIP was trained on a sanitised web corpus and tends to be vague or euphemistic about nudity, anatomy, poses, and adult body content. WD14 was trained on a booru corpus and produces candid tags like `1girl, long hair, topless, large breasts, spread legs, bedroom`. For a person LoRA trained on an adult dataset, those tags are what the model actually needs to learn.
+
+After running step 3, **skim `processed/*.txt`** and:
+
+- Remove anything that's *always true of your subject* (hair colour, eye colour, distinctive face shape). Those belong to the trigger word; captioning them forces the LoRA to fight itself.
+- Keep anything that *varies across the dataset* (clothing, pose, lighting, setting).
+- The **Review** tab (step 4) is the intended place to do this; you can edit any caption and tick/untick images to include. Training only trains on `include=True` rows.
+
+### Quick-insert chips
+
+`Project.prompt_chips` is a per-project list of one-click caption tokens shown on the Review tab. Defaults cover the common axes for a person LoRA: framing (`close-up`, `full body`), poses (`standing`, `sitting`), lighting (`natural light`, `studio lighting`), clothing (`casual clothing`, `dress`, `swimwear`), and explicit tags (`nude`, `topless`, `lingerie`, …). Edit the list on the Review tab or in `config.json` to add project-specific tags.
 
 ## Quality tuning
 
@@ -152,7 +195,9 @@ If `trainer train` crashes with CUDA OOM on 10 GB:
 
 ## Troubleshooting
 
-- **"caption_dataset requires a CUDA GPU"** — captioning loads BLIP in fp16 on cuda with no CPU fallback on purpose. Run on a CUDA machine.
+- **"caption_dataset requires a CUDA GPU"** — BLIP captioning loads in fp16 on CUDA with no CPU fallback on purpose. Run on a CUDA machine, or set `captioner = "wd14"` to skip BLIP entirely (WD14 will run on CPU via `onnxruntime` if no CUDA EP is available).
+- **"WD14 captioning needs onnxruntime"** — install the WD14 extra: `pip install -e ".[wd14]"` (or `pip install onnxruntime-gpu huggingface_hub`). Alternatively set `captioner = "blip"` in `config.json`.
+- **Running low on disk** — `trainer clean <project>` drops `cache/` (pre-computed latents + text embeddings — regenerated on next train) and `checkpoints/` (intermediate `step_N/` dirs — only needed for `--resume`). The final `lora/` is always preserved.
 - **Base checkpoint won't load** — the loader tries `from_single_file` for `.safetensors` and `from_pretrained` for directories. If you pass a `.ckpt`, convert it to `.safetensors` first (e.g. using `diffusers`' converter).
 - **Training hangs at "Caching latents + text embeddings"** — that step runs once per image on first training run. After that it's nearly instant. Delete `cache/` if you've changed `resolution` or captions.
 - **Validation images are black or noise** — usually a broken VAE in fp16 on some cards; the generation loop uses the full pipeline, so retry inference (step 5) with `guidance 5–6` and more steps.
