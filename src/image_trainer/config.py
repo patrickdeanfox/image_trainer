@@ -34,6 +34,14 @@ class Project:
 
     # data prep
     target_size: int = 1024
+    #: When True, :func:`pipeline.resize.resize_dataset` detects the largest
+    #: face in each source and places it on a rule-of-thirds intersection
+    #: (using the face's natural quadrant in the source to choose which
+    #: intersection). Images where no face is detected are still written
+    #: with a centre-crop fallback but are marked ``include=False`` in
+    #: review.json so you can eyeball them. Requires the optional extra:
+    #: ``pip install -e ".[face]"``. Falls back gracefully when missing.
+    face_aware_crop: bool = True
     caption_model_id: str = "Salesforce/blip-image-captioning-large"
     #: Which captioner(s) to run in step 3.
     #: - ``"blip"``:   BLIP sentence only (classic, safer). Fast.

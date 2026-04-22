@@ -24,6 +24,14 @@ xformers = ["xformers"]
 # WD14 NSFW-aware captioner. `onnxruntime` for CPU, `onnxruntime-gpu` for CUDA.
 # huggingface_hub downloads the model weights + tag CSV on first use.
 wd14 = ["onnxruntime", "huggingface_hub"]
+# NOTE: face-aware crop in the prep step uses MTCNN from facenet-pytorch,
+# but facenet-pytorch pins torch<2.3 which conflicts with the torch version
+# the rest of this pipeline wants. DO NOT expose it as a `[face]` extra —
+# pip resolution would downgrade torch and break bitsandbytes. Install
+# manually instead:
+#     pip install facenet-pytorch --no-deps
+# `pipeline/face_detect.py` guards the import and falls back to center-crop
+# if facenet-pytorch is missing.
 
 [project.scripts]
 trainer = "image_trainer.cli:main"

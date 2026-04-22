@@ -13,9 +13,12 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .                    # core (BLIP captioner only)
 pip install -e ".[wd14]"            # + WD14 NSFW-aware tag captioner
 pip install -e ".[xformers]"        # + xformers memory-efficient attention
+pip install facenet-pytorch --no-deps   # + face-aware prep crop (see note below)
 ```
 
 Or just run `./launch.sh` — it bootstraps the venv on first run, does `pip install -e .`, and opens the GUI. `./launch.sh --reset` wipes and reinstalls the venv.
+
+**Why `--no-deps` on `facenet-pytorch`?** It pins `torch<2.3.0`, which would downgrade the torch + torchvision your trainer uses and break `bitsandbytes` and the rest of the pipeline. MTCNN doesn't actually need an old torch — it works fine on the current torch. `--no-deps` installs just the MTCNN code and weights without touching anything else. If face-aware crop is missing, prep silently falls back to the old centre-crop behaviour.
 
 ## Base checkpoint
 
@@ -43,6 +46,8 @@ trainer init me \
   --trigger-word "ohwx person"
 
 # 2. Import source images, resize to 1024×1024 PNGs.
+#    Default: face-aware rule-of-thirds crop (requires facenet-pytorch installed --no-deps).
+#    --no-face-crop falls back to the old centre-crop behaviour.
 trainer prep me --source ~/Pictures/me_dataset
 
 # 3. Caption. Default mode = "both" (BLIP sentence + WD14 tags).
@@ -96,7 +101,14 @@ Defaults are tuned for a person LoRA on an SDXL realistic base at 10 GB VRAM.
 | `use_8bit_optim` | True | Soft fallback to `torch.optim.AdamW` if bitsandbytes missing. |
 | `use_xformers` | True | Soft fallback to sdpa if xformers missing. |
 
-GUI exposes: resolution, LoRA rank, grad accum, xformers toggle, TE LoRA toggle, max steps, checkpoint steps, validation steps. The rest live in `config.json` — edit it by hand when needed.
+GUI exposes: resolution, LoRA rank, grad accum, xformers toggle, TE LoRA toggle, max steps, checkpoint steps, validation steps. Ingest tab also exposes the face-aware crop checkbox (`project.face_aware_crop`). The rest live in `config.json` — edit it by hand when needed.
+
+### Prep knobs
+
+| Knob | Default | Why |
+| --- | --- | --- |
+| `face_aware_crop` | True | Detect the subject's face and place it on a rule-of-thirds intersection (picked from the face's natural quadrant in the source). Images with no detectable face are still written but marked `include=False` in `review.json` so you can eyeball them before training. Falls back silently to centre-crop when `facenet-pytorch` isn't installed. |
+| `target_size` | 1024 | Square edge length for the output PNG. SDXL's native resolution. |
 
 ## Per-project filesystem
 
@@ -152,7 +164,7 @@ Always preserves `lora/`, `outputs/`, `logs/`, `config.json`, `review.json`. Pro
 - `src/image_trainer/config.py` — `Project` dataclass (60+ fields, all in `config.json`) + `ProjectsRoot`.
 - `src/image_trainer/cli.py` — ten subcommands.
 - `src/image_trainer/gui.py` — Tkinter wizard. Owns no ML logic.
-- `src/image_trainer/pipeline/` — `ingest`, `resize`, `caption`, `caption_wd14`, `review`, `insights`, `train`, `generate`.
+- `src/image_trainer/pipeline/` — `ingest`, `resize`, `face_detect`, `caption`, `caption_wd14`, `review`, `insights`, `train`, `generate`.
 - `scripts/legacy_*.py` — pre-refactor standalones; reference only, do not import.
 - `launch.sh` — venv bootstrap + GUI launcher. Portable; safe to commit.
 - `image_trainer.desktop` — Linux desktop entry. Machine-specific (absolute paths). Gitignored.

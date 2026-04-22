@@ -630,6 +630,7 @@ class TrainerGUI:
         self.validation_steps_var = tk.StringVar(value="200")
         self.xformers_var = tk.BooleanVar(value=True)
         self.te_lora_var = tk.BooleanVar(value=False)
+        self.face_aware_var = tk.BooleanVar(value=True)
 
         ttk.Label(f, text="SUBJECT · BASE MODEL", style="Header.TLabel").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, PAD)
@@ -700,8 +701,17 @@ class TrainerGUI:
         ttk.Label(f, text="Source folder:").grid(row=1, column=0, sticky="w")
         ttk.Entry(f, textvariable=self.source_dir_var).grid(row=1, column=1, padx=PAD, sticky="we")
         ttk.Button(f, text="Browse...", command=self._pick_source_dir).grid(row=1, column=2)
+        ttk.Checkbutton(
+            f,
+            text=(
+                "Face-aware crop (rule of thirds) \u2014 detects the subject "
+                "and places the face on a third-line intersection. Images "
+                "with no detectable face are marked excluded for review."
+            ),
+            variable=self.face_aware_var,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=0, pady=(PAD, 0))
         ttk.Button(f, text="Import & resize", style="Primary.TButton", command=self._on_prep).grid(
-            row=2, column=1, sticky="w", padx=PAD, pady=PAD
+            row=3, column=1, sticky="w", padx=PAD, pady=PAD
         )
 
     def _build_caption_tab(self) -> None:
@@ -999,6 +1009,7 @@ class TrainerGUI:
         self.validation_steps_var.set(str(project.validation_steps))
         self.xformers_var.set(project.use_xformers)
         self.te_lora_var.set(project.train_text_encoder)
+        self.face_aware_var.set(project.face_aware_crop)
         # Generate tab defaults also come from the project so they persist per LoRA.
         if not self.negative_var.get().strip():
             self.negative_var.set(project.default_negative_prompt)
@@ -1023,6 +1034,7 @@ class TrainerGUI:
             p.validation_steps = int(self.validation_steps_var.get())
             p.use_xformers = bool(self.xformers_var.get())
             p.train_text_encoder = bool(self.te_lora_var.get())
+            p.face_aware_crop = bool(self.face_aware_var.get())
         except ValueError as e:
             messagebox.showerror("Invalid value", str(e))
             return

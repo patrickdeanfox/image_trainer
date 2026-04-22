@@ -61,14 +61,47 @@ def _cmd_init(args: argparse.Namespace) -> None:
 
 
 def _cmd_prep(args: argparse.Namespace) -> None:
-    """Handler for ``trainer prep``: optional ingest, then resize to ``processed/``."""
+    """Handler for ``trainer prep``: optional ingest, then resize to ``processed/``.
+
+    ``--no-face-crop`` overrides ``project.face_aware_crop`` to disable the
+    face-aware rule-of-thirds crop for this run. Persists the choice to
+    config.json so subsequent runs honour it until flipped again.
+    """
     from .pipeline.ingest import ingest_source
     from .pipeline.resize import resize_dataset
 
     project = Project.load(_resolve_project_dir(args.project_dir))
+    if args.no_face_crop:
+        project.face_aware_crop = False
+        project.save()
     if args.source:
         ingest_source(Path(args.source).expanduser().resolve(), project.raw_dir)
-    resize_dataset(project.raw_dir, project.processed_dir, target_size=project.target_size)
+    result = resize_dataset(
+        project.raw_dir,
+        project.processed_dir,
+        target_size=project.target_size,
+        face_aware=project.face_aware_crop,
+    )
+
+    # Any image where face detection was attempted but failed gets marked
+    # include=False in review.json so the user is forced to look at it on
+    # the Review tab before training. A missing detector (user hasn't
+    # installed the [face] extra) is a global choice and is NOT treated as
+    # a per-image failure.
+    if result.face_failed_stems:
+        from .pipeline import review as review_mod
+
+        review = review_mod.load(project)
+        for stem in result.face_failed_stems:
+            entry = review.entries.get(stem)
+            if entry is None:
+                continue
+            entry.include = False
+            note = "prep: no face detected"
+            entry.notes = (
+                note if not entry.notes else f"{entry.notes}; {note}"
+            )
+        review_mod.save(project, review)
 
 
 def _cmd_caption(args: argparse.Namespace) -> None:
@@ -309,6 +342,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("prep", help="Ingest a source folder and resize to processed/.")
     sp.add_argument("project_dir")
     sp.add_argument("--source", default=None, help="Folder of raw images to import first")
+    sp.add_argument(
+        "--no-face-crop",
+        action="store_true",
+        help=(
+            "Disable the face-aware rule-of-thirds crop for this run and "
+            "fall back to centre-crop. Persists to config.json."
+        ),
+    )
     sp.set_defaults(func=_cmd_prep)
 
     sp = sub.add_parser(
