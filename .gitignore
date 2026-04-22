@@ -11,6 +11,25 @@ __pycache__/
 *.so
 .Python
 
+# Python packaging / editable-install artifacts
+*.egg-info/
+*.egg
+build/
+dist/
+pip-wheel-metadata/
+
+# Dev tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.tox/
+.ipynb_checkpoints/
+
+# Secrets / local env
+.env
+.env.local
+.env.*.local
+
 # Model files (too large for git)
 *.safetensors
 *.ckpt
@@ -51,3 +70,6 @@ temp/
 # Outputs
 outputs/
 logs/
+
+# Local launcher shortcut (hardcoded absolute paths, machine-specific)
+image_trainer.desktop
