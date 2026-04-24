@@ -230,6 +230,8 @@ def generate(
     # rather than relying on truthy-to-None coercion.
     negative_prompt = negative if negative else None
 
+    # ---- Prompt encoding (all of it, BEFORE enable_model_cpu_offload) ----
+    #
     # Compel must run BEFORE enable_model_cpu_offload. The offload hook
     # wraps the text encoders with accelerate magic that manages device
     # placement per-forward; compel bypasses that path and puts its own
@@ -237,12 +239,13 @@ def generate(
     # hook mid-forward and throws:
     #   RuntimeError: Expected all tensors to be on the same device
     #
-    # Solution: explicitly move both text encoders to GPU, run compel to
-    # produce the embeddings, then let enable_model_cpu_offload() take
-    # over everything (including moving the TEs back off the GPU). After
-    # compel we don't call the TEs again — inference uses prompt_embeds
-    # directly — so the device dance only has to be correct for the
-    # encoding step.
+    # In normal mode that means encoding the single prompt here; in
+    # compare-stacks mode it means encoding the prompt for EVERY stack
+    # upfront (one set of embeddings per stack). The text encoders go to
+    # CPU once after all encoding is done, then enable_model_cpu_offload
+    # takes over for the UNet + VAE inference loop. Re-engaging the text
+    # encoders later is a known-broken path under offload — once the hook
+    # is on, the TEs aren't truly movable anymore.
     if torch.cuda.is_available():
         try:
             pipe.text_encoder.to("cuda")
@@ -250,53 +253,64 @@ def generate(
         except Exception:
             pass
 
-    # Try to compute long-prompt embeddings via compel. If it works, we
-    # bypass CLIP's 77-token truncation entirely and pass the embeddings
-    # directly. If compel isn't installed, fall back to the raw-string
-    # path with a clear warning so the user knows their prompt was cut.
-    long_prompt = _encode_long_prompt(pipe, prompt, negative_prompt)
-    if long_prompt is None:
-        # Fallback path. Diffusers' tokenizer will truncate at 77 tokens
-        # and silently print a warning. Estimate the token count so we
-        # can warn the user explicitly when truncation will happen.
-        try:
-            tok_count = len(pipe.tokenizer.tokenize(prompt))
-        except Exception:
-            tok_count = 0
-        if tok_count > 75:
+    # `precomputed` holds either:
+    #   - normal mode: a single embed tuple (pos, pooled, neg, neg_pooled)
+    #     OR None when compel isn't installed (raw-string fallback).
+    #   - compare mode: a list of (stack_label, full_prompt, embed_tuple_or_None).
+    precomputed: object = None  # populated below
+    if compare_stacks:
+        from ..prompt_presets import stacks_for_compare
+        stack_iter = stacks_for_compare()
+        compare_entries: list[tuple[str, str, object]] = []
+        for stack_label, stack_prefix in stack_iter:
+            full_prompt = f"{stack_prefix}{prompt}"
+            embeds = _encode_long_prompt(pipe, full_prompt, negative_prompt)
+            compare_entries.append((stack_label, full_prompt, embeds))
+        precomputed = compare_entries
+        # Whether compel is active determined by the FIRST entry — if compel
+        # is missing they're all None, if compel works they're all populated.
+        compel_active = compare_entries[0][2] is not None if compare_entries else False
+        if compel_active:
             print(
-                f"WARNING: prompt is ~{tok_count} tokens; CLIP's 77-token cap "
-                f"means everything past ~token 77 will be silently dropped. "
-                f"Install 'compel' for long-prompt support: "
-                f"pip install compel",
+                f"Compare-stacks: encoded {len(compare_entries)} prompts via compel.",
                 flush=True,
             )
-        prompt_embeds = pooled_embeds = neg_embeds = neg_pooled = None
     else:
-        prompt_embeds, pooled_embeds, neg_embeds, neg_pooled = long_prompt
-        print(
-            f"Long-prompt encoding via compel "
-            f"(prompt embeds shape: {tuple(prompt_embeds.shape)})",
-            flush=True,
-        )
+        long_prompt = _encode_long_prompt(pipe, prompt, negative_prompt)
+        if long_prompt is None:
+            # Fallback path — warn if the prompt is going to truncate.
+            try:
+                tok_count = len(pipe.tokenizer.tokenize(prompt))
+            except Exception:
+                tok_count = 0
+            if tok_count > 75:
+                print(
+                    f"WARNING: prompt is ~{tok_count} tokens; CLIP's 77-token cap "
+                    f"means everything past ~token 77 will be silently dropped. "
+                    f"Install 'compel' for long-prompt support: pip install compel",
+                    flush=True,
+                )
+            compel_active = False
+        else:
+            print(
+                f"Long-prompt encoding via compel "
+                f"(prompt embeds shape: {tuple(long_prompt[0].shape)})",
+                flush=True,
+            )
+            compel_active = True
+        precomputed = long_prompt  # tuple-or-None
 
-    # ---- Offload setup (AFTER prompt encoding) ----
-    # Now that prompt embeddings are computed, the text encoders don't need
-    # to participate in inference — the UNet call will receive pre-computed
-    # embeds. Free their VRAM and set up accelerate's offload hooks for
-    # UNet + VAE.
+    # ---- Offload setup (AFTER ALL prompt encoding) ----
+    # Move text encoders off GPU + enable offload exactly once.
     import gc as _gc
-    if prompt_embeds is not None:
-        # Compel path — TEs are no longer needed at all. Move them off GPU
-        # explicitly before enabling offload so we don't waste 1-2 GB.
-        try:
-            pipe.text_encoder.to("cpu")
-            pipe.text_encoder_2.to("cpu")
-        except Exception:
-            pass
-        _gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    try:
+        pipe.text_encoder.to("cpu")
+        pipe.text_encoder_2.to("cpu")
+    except Exception:
+        pass
+    _gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     try:
         pipe.enable_xformers_memory_efficient_attention()
@@ -332,40 +346,22 @@ def generate(
     image_seeds: list[int] = []
 
     if compare_stacks:
-        # Iterate every defined quality stack and render ONE image per
-        # stack using the same seed + body. The `prompt` argument in
-        # compare mode is expected to be the BODY (no quality prefix);
-        # the CLI sets this up via --compare-stacks.
-        from ..prompt_presets import stacks_for_compare
-        stack_iter = stacks_for_compare()
-        # Compare mode wants a single shared seed so the ONLY variable
-        # between outputs is the stack. If seed is None, pick one now.
+        # ``precomputed`` is the list of (label, full_prompt, embed_tuple)
+        # populated above (BEFORE offload) — encoding can no longer happen
+        # at this point because the text encoders are wrapped by accelerate.
+        compare_entries = precomputed  # type: ignore[assignment]
+        # Compare mode uses one shared seed so the ONLY variable between
+        # outputs is the stack itself.
         shared_seed = seed if seed is not None else random.randint(0, 2**32 - 1)
         print(
-            f"Compare-stacks mode: {len(stack_iter)} stacks, shared seed {shared_seed}",
+            f"Compare-stacks render: {len(compare_entries)} stacks, "
+            f"shared seed {shared_seed}",
             flush=True,
         )
-        for idx, (stack_label, stack_prefix) in enumerate(stack_iter):
-            full_prompt = f"{stack_prefix}{prompt}"
-            # Re-encode the prompt per stack — the prefix changes, so the
-            # embeddings change. Text encoders are still on CPU (we moved
-            # them there after the first encode); move them back briefly.
-            if torch.cuda.is_available():
-                try:
-                    pipe.text_encoder.to("cuda")
-                    pipe.text_encoder_2.to("cuda")
-                except Exception:
-                    pass
-            stack_long = _encode_long_prompt(pipe, full_prompt, negative_prompt)
-            if torch.cuda.is_available():
-                try:
-                    pipe.text_encoder.to("cpu")
-                    pipe.text_encoder_2.to("cpu")
-                except Exception:
-                    pass
+        for idx, (stack_label, full_prompt, embeds) in enumerate(compare_entries):
             generator = torch.Generator(device="cuda").manual_seed(shared_seed)
-            if stack_long is not None:
-                se, sp, ne, np_ = stack_long
+            if embeds is not None:
+                se, sp, ne, np_ = embeds
                 image = pipe(
                     prompt_embeds=se, pooled_prompt_embeds=sp,
                     negative_prompt_embeds=ne, negative_pooled_prompt_embeds=np_,
@@ -373,25 +369,24 @@ def generate(
                     generator=generator, width=width, height=height,
                 ).images[0]
             else:
+                # Compel not installed — raw-string fallback per stack.
                 image = pipe(
                     prompt=full_prompt, negative_prompt=negative_prompt,
                     num_inference_steps=steps, guidance_scale=guidance,
                     generator=generator, width=width, height=height,
                 ).images[0]
-            # Filesystem-safe label + seed in filename.
             safe_label = "".join(
                 c if (c.isalnum() or c in "_-") else "_" for c in stack_label
             ).strip("_")
             out_path = out_dir / f"{idx:02d}_{safe_label}_seed{shared_seed}.png"
             image.save(out_path)
             print(
-                f"[{idx+1}/{len(stack_iter)}] {stack_label} → {out_path.name}",
+                f"[{idx+1}/{len(compare_entries)}] {stack_label} → {out_path.name}",
                 flush=True,
             )
             results.append(out_path)
             image_seeds.append(shared_seed)
 
-        # Run info captures which stack produced which file.
         _write_run_info(
             out_dir=out_dir, mode="compare_stacks",
             project=project, base_model_path=project.base_model_path,
@@ -399,23 +394,29 @@ def generate(
             sampler=sampler, steps=steps, guidance=guidance,
             width=width, height=height,
             use_trained_lora=use_trained_lora, extras=extras,
-            seeds=image_seeds, stack_labels=[lbl for lbl, _ in stack_iter],
-            compel_active=prompt_embeds is not None,
+            seeds=image_seeds,
+            stack_labels=[lbl for lbl, _, _ in compare_entries],
+            compel_active=compel_active,
         )
         return results
 
-    # Normal (non-compare) path. Pre-compute the seed list so the filenames
-    # can embed the seed + run_info.txt can list them.
+    # Normal (non-compare) path. Unpack the single-prompt tuple.
+    if precomputed is None:
+        prompt_embeds = pooled_embeds = neg_embeds = neg_pooled = None
+    else:
+        prompt_embeds, pooled_embeds, neg_embeds, neg_pooled = precomputed  # type: ignore[misc]
+
+    # Pre-compute the seed list so filenames embed the seed + run_info.txt
+    # can list them.
     if seed is None:
         image_seeds = [random.randint(0, 2**32 - 1) for _ in range(n)]
     else:
         image_seeds = [seed + i for i in range(n)]
 
     for i in range(n):
-        # Per-image generator with the seed we picked above. Using a fresh
-        # generator per iteration (rather than reusing one across the loop)
-        # is what makes rerunning with the same seed reproduce every image,
-        # not just image 0.
+        # Per-image generator with the seed we picked above. Fresh generator
+        # per iteration so rerunning with the same seed reproduces every
+        # image, not just image 0.
         s = image_seeds[i]
         generator = torch.Generator(device="cuda").manual_seed(s)
         if prompt_embeds is not None:
