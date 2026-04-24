@@ -40,10 +40,11 @@ pip-wheel-metadata/
 models/
 
 # Training data (too large for git)
-training_data/processed/
-training_data/raw/
-training_data/model_output/
-training_data/logs/
+training_data/
+
+# Local model storage directory (contents covered by *.safetensors etc. above,
+# but the directory itself should never be tracked)
+safetensors/
 
 # ComfyUI and Kohya (separate git repos)
 ComfyUI/
