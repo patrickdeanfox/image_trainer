@@ -120,6 +120,23 @@ QUALITY_STACKS: list[tuple[str, str, str]] = [
 #: bases without rewriting templates.
 PROMPT_TEMPLATES: list[tuple[str, str, str]] = [
     (
+        "Full-body nude · blonde (default)",
+        "{trigger}, 1girl, beautiful blonde woman, long wavy blonde hair, "
+        "blue eyes, natural makeup, fully nude, full body visible, "
+        "standing, contrapposto pose, arms relaxed at sides, looking at "
+        "viewer, face visible, breasts visible, pubic area visible, "
+        "thighs visible, legs visible, anatomically correct, natural "
+        "body proportions, detailed anatomy, soft natural lighting, "
+        "neutral background, raw photo, professional nude photography, "
+        "85mm lens, shallow depth of field, {body}",
+        "Full-body fully-nude blonde — head-to-toe visible, anatomy "
+        "anchors that suppress Pony's tendency to crop or 'tasteful drape'. "
+        "Default template for the NSFW workflow. Pair with Pony · "
+        "photoreal NSFW quality stack and the NSFW · uncensor negative "
+        "preset; replace 'blonde' with your subject's hair colour for the "
+        "trained-LoRA case.",
+    ),
+    (
         "Portrait · headshot test",
         "{trigger}, beautiful woman, head and shoulders portrait, "
         "looking at viewer, soft natural window light, shallow depth of "
@@ -472,10 +489,18 @@ def build(gui: "TrainerGUI") -> None:
     gui.steps_var = tk.StringVar(value="28")
     gui.guidance_var = tk.StringVar(value="6.5")
     gui.seed_var = tk.StringVar(value="")
-    gui.use_trained_lora_var = tk.BooleanVar(value=True)
+    # Trained LoRA defaults to OFF — most users in NSFW workflows hit
+    # Generate first against the bare base to validate the prompt + sampler
+    # combo before committing to a real training run. Tick the checkbox in
+    # the LoRA stack section once you have a trained LoRA in lora/.
+    gui.use_trained_lora_var = tk.BooleanVar(value=False)
     gui.sampler_var = tk.StringVar(value="dpmpp_2m_karras")
-    gui.aspect_var = tk.StringVar(value="Portrait 832×1216")
-    gui.quality_stack_var = tk.StringVar(value="(none)")
+    # Portrait 896×1152 is the SDXL bucket closest to "full body fits in
+    # frame, head not cropped." 832×1216 is taller still, often cuts feet.
+    gui.aspect_var = tk.StringVar(value="Portrait 896×1152")
+    # Default quality stack is the recommended Pony NSFW opener — matches
+    # the default base most users picked (Pony Diffusion V6 XL).
+    gui.quality_stack_var = tk.StringVar(value="Pony · photoreal NSFW (recommended)")
     gui.output_name_var = tk.StringVar(value="")
 
     state = _GenerateState(gui)
@@ -545,7 +570,24 @@ class _GenerateState:
         self.lora_table: tk.Widget | None = None
         # The actual prompt body the user types (separated from any preset
         # template wrapping or quality-stack prefix).
-        self.body_var = tk.StringVar(value="portrait, natural lighting")
+        # Pre-populated NSFW body — a standalone full-body nude blonde
+        # prompt that works with the Pony · photoreal NSFW quality stack
+        # even without a trained LoRA. Users edit this freely; the
+        # Prompt template dropdown can reset it back to a skeleton with
+        # the project's trigger word substituted.
+        self.body_var = tk.StringVar(
+            value=(
+                "1girl, beautiful blonde woman, long wavy blonde hair, "
+                "blue eyes, natural makeup, fully nude, full body visible, "
+                "standing, contrapposto pose, arms relaxed at sides, "
+                "looking at viewer, face visible, breasts visible, "
+                "pubic area visible, thighs visible, legs visible, "
+                "anatomically correct, natural body proportions, "
+                "detailed anatomy, soft natural lighting, neutral "
+                "background, raw photo, professional nude photography, "
+                "85mm lens, shallow depth of field"
+            )
+        )
         # Run tracking so on_progress_line knows what to render.
         self.run_active: bool = False
         self.images_total: int = 0
