@@ -224,41 +224,30 @@ def generate(
 
     # (Sampler swap moved to BEFORE LoRA load above.)
 
-    try:
-        pipe.enable_xformers_memory_efficient_attention()
-    except Exception:
-        pass
-    pipe.enable_model_cpu_offload()
-
-    # Output dir naming. By default we get an unambiguous, sortable
-    # YYYYMMDD_HHMMSS folder. When the caller passes ``output_name``, it's
-    # sanitised (filesystem-safe) and prefixed onto the same timestamp so
-    # the user can scan their outputs/ folder by purpose ("photoshoot",
-    # "comparison_run", etc.) while keeping a unique per-run suffix.
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    folder = timestamp
-    if output_name and output_name.strip():
-        # Allow letters, digits, underscore, hyphen — replace everything
-        # else with underscore. Avoid empty / dot-prefixed leading.
-        safe = "".join(
-            c if (c.isalnum() or c in "_-") else "_"
-            for c in output_name.strip()
-        ).strip("_")
-        if safe:
-            folder = f"{safe}_{timestamp}"
-    out_dir = project.outputs_dir / folder
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # NOTE: the per-image generator is constructed inside the loop below so
-    # each image gets its own deterministic seed (`seed + i`). Using a
-    # single generator across the loop would leak RNG state from image i to
-    # image i+1, which means rerunning with the same `seed` only reproduces
-    # image 0 — not the whole batch.
-    generator = None  # set per-iteration when seed is supplied
-
+    # ---- Prompt encoding (BEFORE offload setup) ----
     # Empty string disables the negative prompt — make the intent explicit
     # rather than relying on truthy-to-None coercion.
     negative_prompt = negative if negative else None
+
+    # Compel must run BEFORE enable_model_cpu_offload. The offload hook
+    # wraps the text encoders with accelerate magic that manages device
+    # placement per-forward; compel bypasses that path and puts its own
+    # tokens on the encoder's naive `.device`, which collides with the
+    # hook mid-forward and throws:
+    #   RuntimeError: Expected all tensors to be on the same device
+    #
+    # Solution: explicitly move both text encoders to GPU, run compel to
+    # produce the embeddings, then let enable_model_cpu_offload() take
+    # over everything (including moving the TEs back off the GPU). After
+    # compel we don't call the TEs again — inference uses prompt_embeds
+    # directly — so the device dance only has to be correct for the
+    # encoding step.
+    if torch.cuda.is_available():
+        try:
+            pipe.text_encoder.to("cuda")
+            pipe.text_encoder_2.to("cuda")
+        except Exception:
+            pass
 
     # Try to compute long-prompt embeddings via compel. If it works, we
     # bypass CLIP's 77-token truncation entirely and pass the embeddings
@@ -289,6 +278,47 @@ def generate(
             f"(prompt embeds shape: {tuple(prompt_embeds.shape)})",
             flush=True,
         )
+
+    # ---- Offload setup (AFTER prompt encoding) ----
+    # Now that prompt embeddings are computed, the text encoders don't need
+    # to participate in inference — the UNet call will receive pre-computed
+    # embeds. Free their VRAM and set up accelerate's offload hooks for
+    # UNet + VAE.
+    import gc as _gc
+    if prompt_embeds is not None:
+        # Compel path — TEs are no longer needed at all. Move them off GPU
+        # explicitly before enabling offload so we don't waste 1-2 GB.
+        try:
+            pipe.text_encoder.to("cpu")
+            pipe.text_encoder_2.to("cpu")
+        except Exception:
+            pass
+        _gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    try:
+        pipe.enable_xformers_memory_efficient_attention()
+    except Exception:
+        pass
+    pipe.enable_model_cpu_offload()
+
+    # Output dir naming. By default we get an unambiguous, sortable
+    # YYYYMMDD_HHMMSS folder. When the caller passes ``output_name``, it's
+    # sanitised (filesystem-safe) and prefixed onto the same timestamp so
+    # the user can scan their outputs/ folder by purpose ("photoshoot",
+    # "comparison_run", etc.) while keeping a unique per-run suffix.
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder = timestamp
+    if output_name and output_name.strip():
+        safe = "".join(
+            c if (c.isalnum() or c in "_-") else "_"
+            for c in output_name.strip()
+        ).strip("_")
+        if safe:
+            folder = f"{safe}_{timestamp}"
+    out_dir = project.outputs_dir / folder
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[Path] = []
     for i in range(n):
