@@ -1062,19 +1062,41 @@ def train_lora(
             from diffusers.utils import convert_state_dict_to_diffusers
             from peft.utils import get_peft_model_state_dict
 
+            # `get_peft_model_state_dict` returns keys wrapped with PEFT's
+            # `base_model.model.` namespace. `convert_state_dict_to_diffusers`
+            # is expected to strip that prefix so the output looks like
+            # `down_blocks.1.attentions.0...to_k.lora.down.weight`, but in
+            # this diffusers/peft pair it does NOT strip — it only renames
+            # the lora_A/lora_B suffixes to lora.down/lora.up. Result: the
+            # saved file has keys like `unet.base_model.model.down_blocks...`
+            # which PEFT can't re-inject (it searches for modules at those
+            # literal paths in a fresh UNet).
+            #
+            # Fix: strip the prefix manually before the convert call. This
+            # is version-stable regardless of what convert_state_dict_to_diffusers
+            # decides to do, because after stripping the input has no
+            # `base_model.model.` anywhere.
+            _PEFT_WRAP = "base_model.model."
+
+            def _strip_peft_prefix(sd: dict) -> dict:
+                return {
+                    (k[len(_PEFT_WRAP):] if k.startswith(_PEFT_WRAP) else k): v
+                    for k, v in sd.items()
+                }
+
             unet_lora_state = convert_state_dict_to_diffusers(
-                get_peft_model_state_dict(unwrapped_unet)
+                _strip_peft_prefix(get_peft_model_state_dict(unwrapped_unet))
             )
             te1_lora_state = (
                 convert_state_dict_to_diffusers(
-                    get_peft_model_state_dict(unwrapped_te1)
+                    _strip_peft_prefix(get_peft_model_state_dict(unwrapped_te1))
                 )
                 if unwrapped_te1 is not None
                 else None
             )
             te2_lora_state = (
                 convert_state_dict_to_diffusers(
-                    get_peft_model_state_dict(unwrapped_te2)
+                    _strip_peft_prefix(get_peft_model_state_dict(unwrapped_te2))
                 )
                 if unwrapped_te2 is not None
                 else None

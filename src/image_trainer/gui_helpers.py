@@ -277,9 +277,18 @@ def save_user_settings(projects_root: Path, data: dict) -> None:
 
 
 def update_user_setting(projects_root: Path, key: str, value) -> dict:
-    """Read-modify-write helper — merges {key: value} and returns the new dict."""
+    """Read-modify-write helper — merges {key: value} and returns the new dict.
+
+    Passing ``value=None`` removes the key entirely (as opposed to
+    persisting a literal ``null``). Lets callers use ``None`` as a "clear
+    this saved default" signal — e.g. the Generate tab's
+    ``Clear my defaults`` button.
+    """
     data = load_user_settings(projects_root)
-    data[key] = value
+    if value is None:
+        data.pop(key, None)
+    else:
+        data[key] = value
     save_user_settings(projects_root, data)
     return data
 

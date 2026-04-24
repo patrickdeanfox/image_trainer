@@ -22,10 +22,190 @@ behaviour of "last loaded wins" is hard to reason about.
 from __future__ import annotations
 
 import datetime as dt
+import json as _json
+import re as _re
+import struct as _struct
 from pathlib import Path
 from typing import Iterable, Optional
 
 from ..config import Project
+
+
+# ---- LoRA architecture pre-flight --------------------------------------------
+#
+# Diffusers' `pipe.load_lora_weights` fails loudly but late on non-SDXL or
+# malformed LoRAs — after a 10–15 s base-checkpoint load, sometimes halfway
+# through a multi-LoRA stack. The error messages PEFT surfaces ("Target
+# modules … not found in the base model" / "Invalid LoRA checkpoint") don't
+# tell the user WHY the file is wrong, just that it is.
+#
+# This pre-flight reads only the safetensors header (≪1 MB, ~1 ms per file),
+# inspects the tensor-key naming + metadata, and blocks incompatible files
+# before we commit any meaningful time. Three classes of rejection:
+#
+#   * architecture mismatch — FLUX, SD3, Anima, DiT — hard-incompatible with SDXL.
+#   * hybrid malformed format — e.g. mostly-kohya keys but with a handful of
+#     ComfyUI-flattened `diffusion_model_*` keys that diffusers chokes on.
+#     Empirically observed on at least one civitai detail-enhancer LoRA.
+#   * unknown format — no recognizable SDXL markers AND no incompatible markers.
+#     Passed through with a warning; diffusers may still accept or reject it.
+
+_DIT_FLUX        = _re.compile(r"^diffusion_model\.(?:double_blocks|single_blocks)\.")
+_DIT_GENERIC     = _re.compile(r"^diffusion_model\.layers\.\d+\.(?:adaLN_modulation|attention|w\d)")
+_SD3_JOINT       = _re.compile(r"^joint_blocks\.")
+_ANIMA           = _re.compile(r"^lora_unet_blocks_\d+_adaln_modulation")
+_SDXL_KOHYA_UNET = _re.compile(r"^lora_unet_")
+_SDXL_KOHYA_TE   = _re.compile(r"^lora_te[12]?_")
+_SDXL_DIFFUSERS  = _re.compile(r"^unet\.")
+# ComfyUI-flattened raw names (underscore-joined, no `lora_` prefix). Diffusers
+# can't parse these; presence even in small numbers breaks the whole load.
+_COMFY_FLAT      = _re.compile(r"^diffusion_model_")
+
+
+def _read_safetensors_header(path: Path) -> dict:
+    """Read a safetensors file's JSON header without loading any tensors.
+
+    The safetensors format is: 8-byte little-endian header length, then that
+    many bytes of UTF-8 JSON, then the raw tensor bytes. We only need the
+    JSON, which is usually under 1 MB and lists every tensor's name/shape
+    plus an optional ``__metadata__`` blob written by the training script.
+    """
+    with open(path, "rb") as f:
+        header_len = _struct.unpack("<Q", f.read(8))[0]
+        return _json.loads(f.read(header_len).decode("utf-8"))
+
+
+def _classify_lora(path: Path) -> tuple[str, str]:
+    """Return ``(verdict, reason)`` for an extra LoRA, for SDXL compatibility.
+
+    Verdict is one of:
+      * ``"ok"``            — SDXL-compatible kohya or diffusers format.
+      * ``"incompatible"``  — wrong architecture or malformed hybrid format;
+        refuse to load.
+      * ``"warn"``          — unknown format or header unreadable; let the
+        load proceed and surface whatever diffusers says.
+
+    The reason is a short human-readable explanation for the GUI/CLI user.
+    """
+    try:
+        header = _read_safetensors_header(path)
+    except Exception as e:
+        return ("warn", f"couldn't read safetensors header ({e}); letting load proceed")
+
+    meta = header.get("__metadata__") or {}
+    keys = [k for k in header.keys() if k != "__metadata__"]
+
+    # Fast metadata-level architecture check. Both `modelspec.architecture`
+    # (sai_model_spec) and `ss_base_model_version` (kohya sd-scripts) can
+    # carry the info; some files set one, some the other, some neither.
+    arch_meta = " ".join(
+        s.lower() for s in (
+            meta.get("modelspec.architecture"),
+            meta.get("ss_base_model_version"),
+        ) if s
+    )
+    if "flux" in arch_meta:
+        return ("incompatible",
+                f"FLUX LoRA (metadata: {arch_meta!r}); SDXL base cannot load it")
+    if "sd3" in arch_meta or "stable-diffusion-3" in arch_meta:
+        return ("incompatible",
+                f"SD3 LoRA (metadata: {arch_meta!r}); SDXL base cannot load it")
+    if arch_meta.strip() == "anima":
+        return ("incompatible",
+                "Anima architecture LoRA (Lenovo transformer); SDXL base cannot load it")
+
+    # Key-level architecture check. This catches files with missing/misleading
+    # metadata — e.g. FLUX LoRAs with no modelspec entry. We only need one
+    # diagnostic hit; if we see a DiT-family key, we're done.
+    hits = {"flux": 0, "dit": 0, "sd3": 0, "anima": 0,
+            "sdxl_unet": 0, "sdxl_te": 0, "sdxl_diff": 0, "comfy": 0}
+    first_bad_key = {}
+    for k in keys:
+        if _DIT_FLUX.match(k):
+            hits["flux"] += 1; first_bad_key.setdefault("flux", k)
+        elif _DIT_GENERIC.match(k):
+            hits["dit"] += 1;  first_bad_key.setdefault("dit", k)
+        if _SD3_JOINT.match(k):
+            hits["sd3"] += 1;  first_bad_key.setdefault("sd3", k)
+        if _ANIMA.match(k):
+            hits["anima"] += 1; first_bad_key.setdefault("anima", k)
+        if _SDXL_KOHYA_UNET.match(k):
+            hits["sdxl_unet"] += 1
+        if _SDXL_KOHYA_TE.match(k):
+            hits["sdxl_te"] += 1
+        if _SDXL_DIFFUSERS.match(k):
+            hits["sdxl_diff"] += 1
+        # Only count as comfy-flat when it's NOT the kohya `lora_unet_`
+        # prefix, i.e. the raw `diffusion_model_xxx` underscore form.
+        if _COMFY_FLAT.match(k) and not _SDXL_KOHYA_UNET.match(k):
+            hits["comfy"] += 1; first_bad_key.setdefault("comfy", k)
+
+    if hits["flux"]:
+        return ("incompatible",
+                f"FLUX architecture detected (key: {first_bad_key['flux']!r})")
+    if hits["dit"]:
+        return ("incompatible",
+                f"DiT architecture detected (key: {first_bad_key['dit']!r})")
+    if hits["sd3"]:
+        return ("incompatible",
+                f"SD3 architecture detected (key: {first_bad_key['sd3']!r})")
+    if hits["anima"]:
+        return ("incompatible",
+                f"Anima architecture detected (key: {first_bad_key['anima']!r})")
+
+    # Hybrid/malformed format: some valid SDXL keys mixed with raw ComfyUI
+    # `diffusion_model_*` keys. Diffusers rejects the whole file even when
+    # it's mostly SDXL. Block it with a specific message.
+    if hits["comfy"]:
+        return ("incompatible",
+                f"contains {hits['comfy']} non-standard 'diffusion_model_*' "
+                f"key(s) (e.g. {first_bad_key['comfy']!r}) that diffusers "
+                f"cannot parse. This is usually a ComfyUI-only LoRA variant; "
+                f"find a kohya-format version of the same model")
+
+    # At this point, no incompatible markers — does it look SDXL at all?
+    if hits["sdxl_unet"] or hits["sdxl_te"] or hits["sdxl_diff"]:
+        return ("ok", "SDXL")
+
+    return ("warn",
+            "no recognized SDXL / FLUX / SD3 markers in key names; format is "
+            "unknown, letting diffusers try to load it")
+
+
+def _preflight_extra_loras(extras: list) -> None:
+    """Validate existence + architecture of every extra LoRA before the base
+    pipe load. Raises :class:`ValueError` (aggregated) for hard-incompatible
+    files; prints a warning for unknown-format files and returns.
+
+    Aggregating failures into a single ValueError means the user sees every
+    problem at once instead of fix-one-rerun-find-next.
+    """
+    problems: list[tuple[Path, str]] = []
+    warnings_: list[tuple[Path, str]] = []
+    for lora_path, _weight in extras:
+        p = Path(lora_path)
+        if not p.exists():
+            problems.append((p, "file not found"))
+            continue
+        verdict, reason = _classify_lora(p)
+        if verdict == "incompatible":
+            problems.append((p, reason))
+        elif verdict == "warn":
+            warnings_.append((p, reason))
+
+    for p, r in warnings_:
+        print(f"WARNING: {p.name}: {r}", flush=True)
+
+    if problems:
+        lines = ["Cannot load one or more extra LoRAs:"]
+        for p, r in problems:
+            lines.append(f"  - {p.name}: {r}")
+        lines.append("")
+        lines.append(
+            "Remove the incompatible LoRA(s) from --extra-lora, or replace "
+            "them with SDXL versions from Civitai."
+        )
+        raise ValueError("\n".join(lines))
 
 
 def _encode_long_prompt(pipe, prompt: str, negative: Optional[str]):
@@ -121,9 +301,10 @@ def generate(
         )
 
     extras = list(extra_loras or [])
-    for p, _w in extras:
-        if not Path(p).exists():
-            raise FileNotFoundError(f"Extra LoRA not found: {p}")
+    # Validate existence + SDXL compatibility of every extra LoRA BEFORE we
+    # spend ~15 s loading the base checkpoint. Reads each file's safetensors
+    # header only (tiny). See `_classify_lora` above for the rules.
+    _preflight_extra_loras(extras)
 
     if use_trained_lora and (
         not project.lora_dir.exists() or not any(project.lora_dir.iterdir())

@@ -62,7 +62,11 @@ class Project:
     #: stylistic anchors ("photorealistic, soft lighting") or NSFW hints
     #: ("explicit, nsfw"). Comma-separated; gets joined onto the BLIP / WD14
     #: output with a leading comma.
-    caption_extra_suffix: str = ""
+    #: Default anchors training toward photorealism — bakes "photograph, real
+    #: photo" into every caption so the LoRA associates the trigger word with
+    #: photographic output rather than Pony's anime/illustration distribution.
+    #: Clear this if your training data is stylised rather than photographic.
+    caption_extra_suffix: str = "photorealistic, photograph, real photo"
     #: Convenience preset that flips a few defaults for adult datasets:
     #: lowers the general threshold to 0.25, prepends explicit anatomy hints
     #: to ``caption_extra_suffix`` if blank. The actual lowering is applied
@@ -112,7 +116,9 @@ class Project:
 
     # generation defaults (Review + Generate tabs)
     default_negative_prompt: str = (
-        "low quality, blurry, deformed, extra fingers, bad anatomy, watermark"
+        "low quality, blurry, deformed, extra fingers, bad anatomy, watermark, "
+        "anime, cartoon, drawing, illustration, painting, sketch, manga, "
+        "3d render, cgi, unrealistic, plastic skin, doll, airbrushed"
     )
     # Quick-insert tags the Review tab chips bar exposes. Click a chip in the
     # GUI and the token is appended to the current image's caption. Edit this
@@ -244,7 +250,10 @@ class Project:
         Returns :attr:`validation_prompt` if the user has set one, otherwise a
         sensible default constructed from the trigger word.
         """
-        return self.validation_prompt or f"{self.trigger_word}, portrait, studio lighting"
+        return self.validation_prompt or (
+            f"{self.trigger_word}, portrait, studio lighting, "
+            f"photorealistic, raw photo, 35mm film grain"
+        )
 
     def ensure_dirs(self) -> None:
         """Create every per-project subdirectory this code might write to.

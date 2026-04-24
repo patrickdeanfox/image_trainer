@@ -600,4 +600,21 @@ def apply_style(root: tk.Tk) -> Theme:
     # ---- separators ----
     style.configure("TSeparator", background=t.DIVIDER)
 
+    # ---- mouse-wheel hygiene ----
+    # Tk's TCombobox and TSpinbox bind <MouseWheel> / <Button-4> /
+    # <Button-5> at the class level so the wheel steps through values when
+    # the cursor is over the widget. Inside our ScrollableFrame this means
+    # scrolling the page silently changes whatever dropdown the cursor
+    # happened to be over — a serious data-loss bug for the prompt
+    # builder. Unbind the class-level wheel handlers so the page-scroll
+    # binding (in ScrollableFrame) gets the events instead. Trade-off:
+    # users can no longer wheel-step through combobox values, which
+    # nobody uses anyway — clicking the dropdown is the standard path.
+    for cls in ("TCombobox", "TSpinbox"):
+        for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            try:
+                root.unbind_class(cls, ev)
+            except Exception:
+                pass
+
     return t

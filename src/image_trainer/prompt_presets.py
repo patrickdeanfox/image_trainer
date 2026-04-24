@@ -12,74 +12,96 @@ the CLI compare-stacks loop pick it up automatically.
 from __future__ import annotations
 
 
+# The Pony "score up-tag" opener. Pony V6 was trained with a labelling
+# convention where `score_9` is the highest-quality bucket, `score_8_up`
+# = "score_8 OR higher", and so on down to score_4_up. The community
+# consensus (Civitai author notes, reddit threads, the Pony model card
+# itself) is that ALL SIX tags should appear in the prompt opener — not
+# just the top 3. Using only 3 leaves the model underprompted vs how it
+# was trained. Keep this as a constant so every Pony stack stays in sync.
+_PONY_SCORE_6 = (
+    "score_9, score_8_up, score_7_up, score_6_up, score_5_up, score_4_up"
+)
+
+
 #: Quality-tag stacks. Each entry: (display_label, prompt_fragment, hint).
 #: The first entry "(none)" intentionally has an empty fragment — it's the
 #: "don't prepend anything" choice. Compare-stacks mode skips it because
 #: an empty stack isn't meaningful to compare.
+#:
+#: Design principles (rev 2):
+#: - Every Pony-family stack uses the full 6-tag score opener (see above).
+#: - No stack contains `iphone photo` / `smartphone photo` / `motion blur`
+#:   — Pony renders those literally, producing phone-frame compositions
+#:   with Instagram UI overlays (confirmed in outputs 170003, 170835).
+#: - The "heavy photoreal" stack's photo anchors live in the stack ONLY,
+#:   not the body — so users can't accidentally duplicate score tags.
+#: - "Amateur / OnlyFans aesthetic" now uses snapshot/candid anchors
+#:   WITHOUT the phone vocabulary that caused the known failures.
 QUALITY_STACKS: list[tuple[str, str, str]] = [
     (
         "(none)", "",
-        "No quality prefix — your prompt stands alone. Pick this when you "
-        "want full control over the prompt text.",
+        "No quality prefix — your prompt stands alone. Pick this when "
+        "you've hand-authored a complete prompt (including the Pony "
+        "score opener if you're on Pony) and want zero auto-prepending.",
     ),
     (
         "Pony · photoreal NSFW (recommended)",
-        "score_9, score_8_up, score_7_up, source_real, rating_explicit, ",
-        "Canonical Pony photoreal NSFW opener — short, ~10 tokens. "
-        "score_X tags are mandatory for Pony quality; rating_explicit "
-        "unlocks the explicit content range; source_real biases toward "
-        "photographic output. Works best on Pony fine-tunes trained on "
-        "photo data (Pony Realism, Lustify XL); on vanilla Pony V6 XL "
-        "output still drifts stylised — use 'Pony · heavy photoreal' "
-        "instead, or switch base.",
+        f"{_PONY_SCORE_6}, source_real, rating_explicit, ",
+        "The default Pony photoreal NSFW opener. All six score_up tags "
+        "(community-standard), plus source_real + rating_explicit to "
+        "bias toward photographic and unlock explicit output. Pair with "
+        "a Pony-calibrated realism LoRA (e.g. zy_Realism_Enhancer_v2 at "
+        "~0.35) for the cleanest result. ~20 tokens.",
     ),
     (
         "Pony · heavy photoreal (anti-anime)",
-        "score_9, score_8_up, score_7_up, source_real, rating_explicit, "
+        f"{_PONY_SCORE_6}, source_real, rating_explicit, "
         "photo, photorealistic, raw photo, real photograph, "
         "35mm film, skin pores, subsurface scattering, ",
-        "For vanilla Pony V6 XL when the model keeps drifting toward "
-        "anime / illustration. Adds heavier photo anchors — 35mm film, "
-        "skin pores, subsurface scattering — that Pony was trained to "
-        "associate with its photo-distribution. Pair with 'NSFW · "
-        "photoreal push' negative for maximum effect. Bigger token cost "
-        "(~20) — install compel if the rest of your prompt is long.",
+        "For vanilla Pony V6 XL when it keeps drifting toward anime / "
+        "illustration. Adds photo anchors Pony was trained to associate "
+        "with its photo-distribution. DO NOT also add score_ / source_ "
+        "tags to the body — they'll duplicate. ~35 tokens; ensure "
+        "compel is installed if the rest of your prompt is long.",
     ),
     (
         "Pony · photoreal SFW",
-        "score_9, score_8_up, score_7_up, source_real, rating_safe, ",
-        "Same Pony short stack but with rating_safe instead of "
+        f"{_PONY_SCORE_6}, source_real, rating_safe, ",
+        "Same 6-tag Pony opener but with rating_safe instead of "
         "rating_explicit. Use for SFW portrait / lifestyle work.",
     ),
     (
         "Pony · explicit (heavy)",
-        "score_9, score_8_up, score_7_up, score_6_up, rating_explicit, "
-        "rating_questionable, source_real, ",
-        "Heavier Pony NSFW opener — ~13 tokens. Adds score_6_up + "
-        "rating_questionable to widen the explicit range. Use when the "
-        "base is producing tasteful / implied output and you want it to "
-        "lean more explicit. Costs more token budget.",
+        f"{_PONY_SCORE_6}, source_real, rating_explicit, "
+        "rating_questionable, ",
+        "Wider explicit range — adds rating_questionable alongside "
+        "rating_explicit. Use when the base produces tasteful / implied "
+        "output and you want it to commit further. Costs ~3 more tokens "
+        "than the recommended stack.",
     ),
     (
-        "Pony · anime / illustrated",
-        "score_9, score_8_up, score_7_up, source_anime, rating_explicit, ",
-        "Pony in anime/hentai mode. source_anime pulls toward Pony's "
-        "illustrated-art training distribution. Combine with anime-style "
-        "LoRAs from the library.",
+        "Pony · score-only (minimal)",
+        f"{_PONY_SCORE_6}, ",
+        "Just the six Pony score tags, nothing else. Use when you want "
+        "to hand-author every other anchor (photo vs illustration, "
+        "rating, subject, etc.) in the body yourself. Smallest Pony "
+        "prefix that still gets you Pony quality.",
     ),
     (
         "Illustrious / NoobAI XL",
         "masterpiece, best quality, very aware, newest, absurdres, ",
         "Tag stack for Illustrious-XL / NoobAI-XL family checkpoints. "
         "Different vocabulary from Pony — masterpiece + best quality + "
-        "very aware (NoobAI's anatomy anchor) + newest (recency bias).",
+        "very aware (NoobAI's anatomy anchor) + newest (recency bias). "
+        "Do NOT use on Pony bases; the vocabulary doesn't transfer.",
     ),
     (
         "RealVis / Juggernaut · photoreal",
         "raw photo, dslr, photorealistic, ",
         "Short realism-tilted opener for RealVisXL / JuggernautXL / "
-        "vanilla SDXL fine-tunes that don't use score_X tags. Pair with "
-        "the NSFW uncensor negative preset for explicit work.",
+        "vanilla SDXL fine-tunes that don't use score_X tags. Pair "
+        "with the NSFW uncensor negative preset for explicit work.",
     ),
     (
         "Photoreal pro (non-Pony) · heavy",
@@ -88,29 +110,29 @@ QUALITY_STACKS: list[tuple[str, str, str]] = [
         "skin pores, subsurface scattering, sharp focus, detailed skin, "
         "photorealistic, hyperrealistic, ",
         "Heaviest photoreal anchor stack for non-Pony realism bases "
-        "(RealVisXL V5, CyberRealistic XL, EpicRealism XL). Camera + film "
-        "stock + skin-detail vocabulary anchors output firmly in the "
-        "photograph distribution. About 20 tokens; pair with 'NSFW · "
-        "photoreal push' negative. Do NOT use with Pony — the non-Pony "
-        "vocabulary confuses Pony's score_X training.",
+        "(RealVisXL V5, CyberRealistic XL, EpicRealism XL). About 20 "
+        "tokens; pair with 'NSFW · photoreal push' negative. Do NOT "
+        "use with Pony — the non-Pony vocabulary confuses Pony's score "
+        "training.",
     ),
     (
         "Amateur / OnlyFans aesthetic",
-        "iphone photo, smartphone photo, candid snapshot, amateur "
-        "photograph, natural skin, no makeup filter, real woman, "
-        "instagram aesthetic, slight motion blur, ",
-        "Mimics the smartphone + amateur-photography distribution most "
-        "OnlyFans / personal-likeness training datasets are drawn from. "
-        "Best match to the LoRA's training distribution once you have a "
-        "trained LoRA. 'no makeup filter' + 'real woman' actively suppress "
-        "the airbrushed / doll-like output Pony defaults to.",
+        f"{_PONY_SCORE_6}, source_real, rating_explicit, "
+        "candid snapshot, amateur photograph, natural skin, "
+        "no makeup filter, real woman, ",
+        "Mimics the amateur-photography distribution most OnlyFans / "
+        "personal-likeness training datasets draw from. Does NOT include "
+        "'iphone photo / smartphone photo / motion blur' — those tokens "
+        "caused Pony to render phone-in-frame compositions with "
+        "Instagram UI overlays. Keeps the candid anchors that actually "
+        "help. Pair with a trained likeness LoRA.",
     ),
     (
         "Lustify / Pony Realism",
-        "score_9, score_8_up, score_7_up, source_real, rating_explicit, "
+        f"{_PONY_SCORE_6}, source_real, rating_explicit, "
         "professional photography, ",
-        "Tuned for Lustify XL and Pony Realism. Pony score stack + "
-        "professional-photography anchor for the magazine look these "
+        "Tuned for Lustify XL and Pony Realism. Full 6-tag Pony opener "
+        "+ professional-photography anchor for the magazine look these "
         "fine-tunes were heavily trained on.",
     ),
 ]

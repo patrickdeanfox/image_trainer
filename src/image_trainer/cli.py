@@ -302,21 +302,28 @@ def _cmd_generate(args: argparse.Namespace) -> None:
 
     project = Project.load(_resolve_project_dir(args.project_dir))
     # Each --extra-lora is "PATH" or "PATH:WEIGHT". WEIGHT defaults to 1.0.
+    #
+    # Rule: split on the LAST ':' and use it as the weight only when the
+    # trailing token parses as a float. This correctly handles:
+    #   * absolute UNIX paths       — "/home/.../foo.safetensors:0.6"
+    #   * Windows drive letters     — "C:\loras\foo.safetensors"  (trailing
+    #     "\loras\foo.safetensors" won't float-parse; fall through)
+    #   * paths with colons in dirs — "/w:eird/foo.safetensors:0.7"
+    #   * bare paths (no weight)    — defaults to 1.0
+    # The previous heuristic short-circuited on `startswith("/")`, which
+    # broke every Linux call with a weight suffix.
     extras: list[tuple[Path, float]] = []
     for raw in args.extra_lora or []:
-        if ":" in raw and not raw.startswith("/"):
-            # Heuristic: treat ':' as separator only when it's not a Windows
-            # drive path or absolute UNIX path with ':' in a folder name. Easy
-            # rule: split on the LAST ':' so "/path/with:colons.safetensors:0.7"
-            # works.
+        if ":" in raw:
             path_part, _, weight_part = raw.rpartition(":")
-            try:
-                weight = float(weight_part)
-                extras.append((Path(path_part).expanduser().resolve(), weight))
-                continue
-            except ValueError:
-                pass
-        # No weight supplied — default to 1.0.
+            if path_part:
+                try:
+                    weight = float(weight_part)
+                    extras.append((Path(path_part).expanduser().resolve(), weight))
+                    continue
+                except ValueError:
+                    pass
+        # No parseable :WEIGHT — take the whole string as a path, weight 1.0.
         extras.append((Path(raw).expanduser().resolve(), 1.0))
     generate(
         project,
@@ -633,8 +640,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="RIFE frame interpolation factor. 2 = double, 4 = quadruple.",
     )
     sp.add_argument(
-        "--upscale-model", default="realesr-animevideov3",
-        help="Real-ESRGAN model name (e.g. realesr-animevideov3, realesrgan-x4plus).",
+        "--upscale-model", default="realesrgan-x4plus",
+        help="Real-ESRGAN model name (e.g. realesrgan-x4plus, realesr-animevideov3).",
     )
     sp.add_argument(
         "--upscale-scale", type=int, default=2,

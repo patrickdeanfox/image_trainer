@@ -4,7 +4,7 @@ Local end-to-end pipeline for training a personal-likeness **SDXL LoRA**, genera
 
 Hardware envelope: **10 GB VRAM / 16 GB RAM / 20 GB swap**. Overnight training is a first-class workflow. Linux + CUDA assumed throughout.
 
-## Install
+## Install !
 
 ```bash
 git clone git@github.com:patrickdeanfox/image_trainer.git
