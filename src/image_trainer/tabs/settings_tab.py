@@ -215,7 +215,12 @@ def _on_save(gui: "TrainerGUI") -> None:
         proposed.train_text_encoder = bool(gui.te_lora_var.get())
         proposed.face_aware_crop = bool(gui.face_aware_var.get())
     except ValueError as e:
-        messagebox.showerror("Invalid value", str(e))
+        messagebox.showerror(
+            "Couldn't parse a numeric setting",
+            f"One of the numeric fields (resolution, LoRA rank, grad "
+            f"accumulation, max steps, checkpoint every, validation every) "
+            f"isn't a valid integer.\n\nDetail: {e}",
+        )
         return
 
     diff = gui_helpers.config_diff(old, proposed)

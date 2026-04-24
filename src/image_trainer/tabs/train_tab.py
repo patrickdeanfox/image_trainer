@@ -405,10 +405,14 @@ class _TrainState:
             messagebox.showinfo("Nothing running", "No training process to stop.")
             return
         if self.gui.runner.stop_graceful():
-            self.status_var.set("stop requested; checkpointing before exit...")
+            self.status_var.set(
+                "stopping — finishing current step and saving a checkpoint…"
+            )
             self.gui.log_queue.put(
-                "[stop requested; waiting for training to checkpoint and exit "
-                "— this can take up to ~30s while the current step finishes]\n"
+                "[Stop requested. Training will finish the current step, save "
+                "a checkpoint to checkpoints/, and exit. This usually takes "
+                "10-30 seconds. Run with --resume next time to pick up where "
+                "you left off.]\n"
             )
         else:
             messagebox.showerror(

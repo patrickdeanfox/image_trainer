@@ -149,10 +149,16 @@ def _validate_or_reset_cache(project: Project) -> None:
                 f"clearing {project.cache_dir}",
                 flush=True,
             )
+            # Write the new marker BEFORE deleting so a Ctrl-C between the
+            # delete and the write doesn't leave us with no marker + a
+            # half-deleted cache (which would be silently trusted on the
+            # next run).
+            marker_path.write_text(json.dumps(current, indent=2))
             for sub in ("latents", "embeds"):
                 d = project.cache_dir / sub
                 if d.exists():
                     shutil.rmtree(d)
+            return
     marker_path.write_text(json.dumps(current, indent=2))
 
 
@@ -724,23 +730,21 @@ def train_lora(
         if n == 0:
             raise RuntimeError("No training entries after caching; aborting.")
 
-        # ---- safe UNet upcast (10 GB VRAM friendly) ----
-        # The naive ``unet.to(device, dtype=torch.float32)`` does device + dtype
-        # in one step. PyTorch can't do that in-place when the dtype changes,
-        # so it allocates the fp32 destination on GPU while the fp16 source is
-        # still resident. On a 10 GB card with caching residue this trips OOM
-        # before the first training step.
+        # ---- UNet on GPU (fp16, NOT fp32) ----
+        # Critical: SDXL UNet has 2.57B params. In fp32 that's ~10.3 GB of
+        # weights alone — won't fit on a 10 GB card no matter how you slice
+        # it. Standard LoRA training keeps the BASE in fp16 (frozen) and
+        # only the small PEFT LoRA adapters in fp32 (trainable). The
+        # accelerator handles mixed-precision autocast around the fp16
+        # base + fp32 LoRA combo automatically.
         #
-        # Robust path: belt-and-braces offload the encoders we just used (the
-        # offload calls inside ``_cache_*`` do this too, but PyTorch's caching
-        # allocator can hold fragments), force a gc + empty_cache, then cast
-        # the UNet to fp32 ON CPU first. The CPU dtype-conversion hits the
-        # user's plentiful RAM, and the eventual move to GPU is a clean
-        # single allocation.
+        # We still belt-and-braces offload VAE + (when applicable) TEs to
+        # CPU before the UNet move, because PyTorch's caching allocator can
+        # hold fragments after the cache phase even after empty_cache().
         import gc
         if not project.train_text_encoder:
-            # In the live-encoders path the TEs are intentionally resident on
-            # GPU; only offload them when we're not training them.
+            # In the live-encoders path the TEs are intentionally resident
+            # on GPU; only offload them when we're not training them.
             pipe.text_encoder.to("cpu")
             pipe.text_encoder_2.to("cpu")
         pipe.vae.to("cpu")
@@ -748,11 +752,16 @@ def train_lora(
         torch.cuda.empty_cache()
 
         unet = pipe.unet
-        unet.to("cpu", dtype=torch.float32)   # cast in CPU RAM, not on GPU
-        gc.collect()
-        torch.cuda.empty_cache()
-        unet.to(device)                        # then a single clean GPU alloc
+        # Move to GPU at the loaded dtype (fp16 from _load_sdxl_pipeline).
+        # No dtype change → no transient double-allocation, and the static
+        # footprint stays at ~5 GB instead of ~10 GB.
+        unet.to(device)
         unet.enable_gradient_checkpointing()
+
+        # Freeze the base so only the PEFT-injected LoRA layers train. PEFT
+        # creates its trainable adapter tensors in fp32 internally, so this
+        # gives us the right (fp16 frozen base + fp32 trainable LoRA) shape.
+        unet.requires_grad_(False)
 
         lora_config = LoraConfig(
             r=project.lora_rank,
@@ -763,13 +772,13 @@ def train_lora(
         unet = get_peft_model(unet, lora_config)
         unet.print_trainable_parameters()
 
-        # TE LoRA adapters (only on the live-encoders path). Move TEs to
-        # fp32 on GPU first — same convention as the UNet; accelerator handles
-        # mixed-precision autocast around the fp32 master weights.
+        # TE LoRA adapters (only on the live-encoders path). Same fp16
+        # convention — the LoRA adapters PEFT creates are fp32 internally,
+        # the base TE weights stay fp16 to fit in VRAM.
         te1_lora = te2_lora = None
         if project.train_text_encoder:
-            pipe.text_encoder.to(device, dtype=torch.float32)
-            pipe.text_encoder_2.to(device, dtype=torch.float32)
+            pipe.text_encoder.to(device)
+            pipe.text_encoder_2.to(device)
             te1_lora, te2_lora = _wrap_text_encoders_with_lora(pipe, project)
 
         # Two param groups so UNet LoRA and TE LoRA can have different LRs.
@@ -1025,17 +1034,73 @@ def train_lora(
         project.lora_dir.mkdir(parents=True, exist_ok=True)
 
         unwrapped_unet = accelerator.unwrap_model(unet)
+        # 1) PEFT-native format under lora/unet/ — useful for resume +
+        #    PEFT-aware tools that want the adapter_config.json + a
+        #    standalone adapter_model.safetensors.
         unwrapped_unet.save_pretrained(str(project.lora_dir / "unet"))
-        print(f"UNet LoRA exported to {project.lora_dir / 'unet'}", flush=True)
+        print(f"UNet LoRA (PEFT format) exported to {project.lora_dir / 'unet'}", flush=True)
 
+        unwrapped_te1 = unwrapped_te2 = None
         if te1_lora is not None:
             unwrapped_te1 = accelerator.unwrap_model(te1_lora)
             unwrapped_te2 = accelerator.unwrap_model(te2_lora)
             unwrapped_te1.save_pretrained(str(project.lora_dir / "text_encoder"))
             unwrapped_te2.save_pretrained(str(project.lora_dir / "text_encoder_2"))
             print(
-                f"TE LoRA exported to {project.lora_dir / 'text_encoder'} "
+                f"TE LoRA (PEFT format) exported to {project.lora_dir / 'text_encoder'} "
                 f"and {project.lora_dir / 'text_encoder_2'}",
+                flush=True,
+            )
+
+        # 2) Diffusers-native flat format at lora/pytorch_lora_weights.safetensors —
+        #    this is what `pipe.load_lora_weights(lora_dir)` looks for. Without
+        #    this file, generate.py fails with "no file named pytorch_lora_weights.bin".
+        #    Saving both formats keeps train + generate consistent AND keeps
+        #    the LoRA portable to ComfyUI / A1111 / civitai uploads.
+        try:
+            from diffusers import StableDiffusionXLPipeline
+            from diffusers.utils import convert_state_dict_to_diffusers
+            from peft.utils import get_peft_model_state_dict
+
+            unet_lora_state = convert_state_dict_to_diffusers(
+                get_peft_model_state_dict(unwrapped_unet)
+            )
+            te1_lora_state = (
+                convert_state_dict_to_diffusers(
+                    get_peft_model_state_dict(unwrapped_te1)
+                )
+                if unwrapped_te1 is not None
+                else None
+            )
+            te2_lora_state = (
+                convert_state_dict_to_diffusers(
+                    get_peft_model_state_dict(unwrapped_te2)
+                )
+                if unwrapped_te2 is not None
+                else None
+            )
+            StableDiffusionXLPipeline.save_lora_weights(
+                save_directory=str(project.lora_dir),
+                unet_lora_layers=unet_lora_state,
+                text_encoder_lora_layers=te1_lora_state,
+                text_encoder_2_lora_layers=te2_lora_state,
+                safe_serialization=True,
+            )
+            print(
+                f"LoRA (diffusers format) saved to "
+                f"{project.lora_dir / 'pytorch_lora_weights.safetensors'}",
+                flush=True,
+            )
+        except Exception as e:
+            # Don't let the diffusers-format save fail the training run.
+            # The PEFT format is already on disk; the user can still load
+            # it manually. Log the error so they know generate may not work
+            # out of the box.
+            print(
+                f"WARNING: failed to write diffusers-format LoRA: {e}\n"
+                f"  PEFT-format LoRA is still at {project.lora_dir / 'unet'}.\n"
+                f"  Generate may fail with 'no pytorch_lora_weights.bin found' "
+                f"until this is resolved.",
                 flush=True,
             )
 

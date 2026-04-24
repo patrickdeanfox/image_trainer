@@ -157,7 +157,11 @@ def _on_caption(gui: "TrainerGUI") -> None:
         project.caption_extra_suffix = gui.caption_suffix_var.get().strip()
         project.caption_nsfw_preset = bool(gui.caption_nsfw_var.get())
     except ValueError as e:
-        messagebox.showerror("Invalid threshold", str(e))
+        messagebox.showerror(
+            "Threshold isn't a number",
+            f"The general / character WD14 threshold spinboxes need a "
+            f"value between 0.0 and 1.0 (e.g. 0.35).\n\nDetail: {e}",
+        )
         return
     project.save()
 

@@ -155,6 +155,10 @@ class _ReviewState:
         in_frame.columnconfigure(0, weight=1)
         self.listbox_in = tk.Listbox(
             in_frame, activestyle="none", exportselection=False,
+            # selectmode="extended" enables click + shift-click range
+            # selection AND ctrl-click for non-contiguous picking, both
+            # via Tk's built-in handlers.
+            selectmode="extended",
             background=t.BG_INPUT, foreground=t.TEXT_PRIMARY,
             selectbackground=t.ACCENT_GREEN, selectforeground=t.TEXT_ON_ACCENT,
             highlightthickness=1, highlightbackground=t.DIVIDER,
@@ -178,6 +182,7 @@ class _ReviewState:
         out_frame.columnconfigure(0, weight=1)
         self.listbox_out = tk.Listbox(
             out_frame, activestyle="none", exportselection=False,
+            selectmode="extended",
             background=t.BG_INPUT, foreground=t.TEXT_MUTED,
             selectbackground=t.ACCENT_RED, selectforeground=t.TEXT_ON_ACCENT,
             highlightthickness=1, highlightbackground=t.DIVIDER,
@@ -210,8 +215,18 @@ class _ReviewState:
                    command=lambda: self.step(+1)).pack(side="left", padx=(PAD // 2, 0))
         ttk.Button(nav, text="Toggle include", style="Ghost.TButton",
                    command=self.toggle_include).pack(side="left", padx=(PAD, 0))
+        # Bulk-move buttons act on whatever's currently highlighted in
+        # either listbox via shift-click range / ctrl-click set selection.
+        ttk.Button(
+            nav, text="Exclude selected ▶", style="Ghost.TButton",
+            command=self.bulk_exclude,
+        ).pack(side="left", padx=(PAD, 0))
+        ttk.Button(
+            nav, text="◀ Include selected", style="Ghost.TButton",
+            command=self.bulk_include,
+        ).pack(side="left", padx=(PAD // 2, 0))
         ttk.Label(
-            nav, text="← → nav · I toggle · Ctrl+S save",
+            nav, text="click + shift-click range · ctrl-click set",
             style="Status.TLabel",
         ).pack(side="right")
 
@@ -758,6 +773,81 @@ class _ReviewState:
     def toggle_include(self) -> None:
         self.include_var.set(not self.include_var.get())
         self._capture()
+
+    # ---- bulk select / move ----
+
+    def _selected_stems(self, side: str) -> list[str]:
+        """Return the stems currently highlighted in the given column."""
+        lb = self.listbox_in if side == "in" else self.listbox_out
+        visible = self.included_visible if side == "in" else self.excluded_visible
+        out: list[str] = []
+        for idx in lb.curselection():
+            if 0 <= idx < len(visible):
+                out.append(visible[idx])
+        return out
+
+    def bulk_exclude(self) -> None:
+        """Move every selected stem in the Included column → Excluded.
+
+        No-op if nothing is selected on the included side. Saves the user's
+        current edits to the visible stem first so the in-flight caption /
+        notes don't get lost when the row jumps columns.
+        """
+        if self.review is None:
+            return
+        # Persist anything the user typed in the editor before the rebuild.
+        self._capture()
+        stems = self._selected_stems("in")
+        if not stems:
+            messagebox.showinfo(
+                "Nothing selected",
+                "Click a stem in the Included column (shift-click for a "
+                "range, ctrl-click to add) before pressing 'Exclude "
+                "selected ▶'.",
+            )
+            return
+        for stem in stems:
+            entry = self.review.entries.get(stem)
+            if entry is not None:
+                entry.include = False
+        # Track the last-moved stem so the cursor lands somewhere sensible.
+        last = stems[-1]
+        self.current_stem = last
+        self.active_side = "out"
+        self._refresh_listbox()
+        self._reflect_selection()
+        self._render()
+        self.gui.status_var.set(
+            f"Excluded {len(stems)} image(s)"
+        )
+
+    def bulk_include(self) -> None:
+        """Mirror of :meth:`bulk_exclude` for the Excluded → Included direction."""
+        if self.review is None:
+            return
+        self._capture()
+        stems = self._selected_stems("out")
+        if not stems:
+            messagebox.showinfo(
+                "Nothing selected",
+                "Click a stem in the Excluded column (shift-click for a "
+                "range, ctrl-click to add) before pressing '◀ Include "
+                "selected'.",
+            )
+            return
+        for stem in stems:
+            entry = self.review.entries.get(stem)
+            if entry is not None:
+                entry.include = True
+        last = stems[-1]
+        self.current_stem = last
+        self.active_side = "in"
+        self._refresh_listbox()
+        self._reflect_selection()
+        self._render()
+        self.gui.status_var.set(
+            f"Included {len(stems)} image(s)"
+        )
 
     def _append_chip(self, chip: str) -> None:
         current = self.caption_text.get("1.0", "end").strip()

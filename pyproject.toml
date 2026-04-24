@@ -12,7 +12,12 @@ dependencies = [
     "torchvision",
     "Pillow",
     "transformers",
-    "diffusers>=0.27",
+    # diffusers is capped to <0.32 because 0.33+ introduced an
+    # attention_dispatch.py module that registers torch custom_ops using
+    # PEP 604 union types (``float | None``). torch 2.4.1's infer_schema
+    # doesn't understand those and raises at import time. Bump the upper
+    # bound once we move to torch 2.6+ which handles the new syntax.
+    "diffusers>=0.27,<0.32",
     "peft>=0.10",
     "accelerate",
     "safetensors",
@@ -20,10 +25,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-xformers = ["xformers"]
 # WD14 NSFW-aware captioner. `onnxruntime` for CPU, `onnxruntime-gpu` for CUDA.
 # huggingface_hub downloads the model weights + tag CSV on first use.
 wd14 = ["onnxruntime", "huggingface_hub"]
+# Long-prompt support for the Generate tab. SDXL's CLIP encoders cap at
+# 77 tokens — without compel, anything past that is silently dropped and
+# the user gets garbage output that ignored half their prompt. Soft-import
+# in pipeline/generate.py: when missing, falls back to truncated prompts
+# with an explicit warning so the user knows.
+prompts = ["compel"]
+# NOTE: xformers is NOT exposed as a pip extra here on purpose.
+# `pip install xformers` from PyPI pulls a wheel built against a specific
+# torch version and will silently overwrite the user's working torch +
+# NCCL, producing `ImportError: undefined symbol: ncclCommWindowDeregister`
+# the next time they `import torch`. Install the matched wheel from
+# PyTorch's index instead — see README "xformers — install carefully".
 # NOTE: face-aware crop in the prep step uses MTCNN from facenet-pytorch,
 # but facenet-pytorch pins torch<2.3 which conflicts with the torch version
 # the rest of this pipeline wants. DO NOT expose it as a `[face]` extra —

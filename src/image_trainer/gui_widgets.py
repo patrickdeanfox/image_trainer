@@ -9,6 +9,9 @@ Contents:
 - :class:`Sparkline` — tiny line chart (used for training loss).
 - :class:`FolderField` — Entry + Browse + Open composite for path inputs.
 - :class:`CollapsibleFrame` — header row with a caret that toggles the body.
+- :class:`ScrollableFrame` — vertically scrollable container with a managed
+  inner frame + mouse-wheel scroll. Use this whenever a tab grows taller
+  than the window.
 - :class:`ThumbnailGrid` — scrollable grid of PIL images (Review tab).
 - :class:`Tooltip` — hover popup with a one-sentence explanation.
 - :func:`info_icon` — convenience builder that drops a ⓘ glyph + tooltip
@@ -259,6 +262,121 @@ class CollapsibleFrame(ttk.Frame):
             self._caret_var.set("▸")
 
 
+# ---------- ScrollableFrame ----------
+
+class ScrollableFrame(ttk.Frame):
+    """Vertically scrollable container with a managed inner frame.
+
+    Use when a tab's content can grow taller than the window and you want
+    a regular vertical scroll instead of cramping or hiding fields. The
+    pattern is the standard "Canvas + Scrollbar + inner Frame + bind
+    <Configure>" recipe; this widget just packages it once so each tab
+    isn't reinventing it.
+
+    Usage:
+        scroll = ScrollableFrame(parent_frame)
+        scroll.pack(fill="both", expand=True)
+        # Build your widgets inside scroll.body, treating it as a
+        # regular ttk.Frame.
+        ttk.Label(scroll.body, text="Hello").pack()
+
+    Notes:
+    - The inner frame's width tracks the canvas's width, so packed/grid
+      children that expand horizontally stay full-width.
+    - Mouse wheel scroll is bound globally on the canvas while the
+      pointer is over it, mirroring native scroll feel on Linux/Windows.
+    - We deliberately do NOT bind a horizontal scrollbar — for tab
+      content, vertical scroll is what users expect; horizontal scroll
+      hides content unpredictably.
+    """
+
+    def __init__(self, master: tk.Misc, *, panel_style: bool = False) -> None:
+        super().__init__(master)
+        t = gui_theme.THEME
+
+        bg = t.BG_PANEL if panel_style else t.BG_ROOT
+
+        # Explicit, modest minimum width/height. Without these the Canvas
+        # asks the layout system for whatever its inner content needs,
+        # which on a tab with a tall scrollable form (e.g. the Generate
+        # tab) bubbles up to the surrounding ttk.Notebook and pushes the
+        # telemetry pane off the bottom of the window. The canvas can
+        # still expand beyond these via fill="both" expand=True; the
+        # numbers are just the *minimum* it requests.
+        self._canvas = tk.Canvas(
+            self,
+            background=bg,
+            highlightthickness=0,
+            borderwidth=0,
+            width=600,
+            height=200,
+        )
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        self._vsb = ttk.Scrollbar(
+            self, orient="vertical", command=self._canvas.yview,
+            style="Vertical.TScrollbar",
+        )
+        self._vsb.pack(side="right", fill="y")
+        self._canvas.configure(yscrollcommand=self._vsb.set)
+
+        # The frame the caller actually drops widgets into.
+        self.body = ttk.Frame(self._canvas, style="Panel.TFrame" if panel_style else "TFrame")
+        self._win = self._canvas.create_window(
+            (0, 0), window=self.body, anchor="nw",
+        )
+
+        # Re-compute scrollregion whenever inner content reflows.
+        self.body.bind("<Configure>", self._on_inner_configure)
+        # Keep inner frame's width matched to the canvas so horizontal
+        # expansion of children works as expected.
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+
+        # Wheel scrolling is bound on enter / unbound on leave so multiple
+        # ScrollableFrames in the same window don't fight for events.
+        self._canvas.bind("<Enter>", self._bind_wheel)
+        self._canvas.bind("<Leave>", self._unbind_wheel)
+
+    # ---- internal handlers ----
+
+    def _on_inner_configure(self, _e=None) -> None:
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+    def _on_canvas_configure(self, e) -> None:
+        # Match inner-frame width to the canvas; this is what makes packed
+        # children with fill="x" actually fill the visible area.
+        self._canvas.itemconfigure(self._win, width=e.width)
+
+    def _bind_wheel(self, _e=None) -> None:
+        # Windows / macOS deliver MouseWheel with .delta in multiples of 120.
+        self._canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        # X11 delivers scroll as Button-4 / Button-5.
+        self._canvas.bind_all("<Button-4>", self._on_button4)
+        self._canvas.bind_all("<Button-5>", self._on_button5)
+
+    def _unbind_wheel(self, _e=None) -> None:
+        for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            try:
+                self._canvas.unbind_all(ev)
+            except Exception:
+                pass
+
+    def _on_mousewheel(self, e) -> None:
+        delta = -1 if e.delta > 0 else 1
+        self._canvas.yview_scroll(delta * 3, "units")
+
+    def _on_button4(self, _e=None) -> None:
+        self._canvas.yview_scroll(-3, "units")
+
+    def _on_button5(self, _e=None) -> None:
+        self._canvas.yview_scroll(3, "units")
+
+    # ---- convenience ----
+
+    def scroll_to_top(self) -> None:
+        self._canvas.yview_moveto(0)
+
+
 # ---------- ThumbnailGrid ----------
 
 class ThumbnailGrid(ttk.Frame):
@@ -396,9 +514,9 @@ class Tooltip:
     interface, not as a generic OS tooltip.
     """
 
-    DELAY_MS = 600          # hover dwell before showing
-    OFFSET = (12, 16)       # cursor → tooltip nudge in pixels
-    MAX_WIDTH = 320
+    DELAY_MS = 350          # hover dwell before showing — short feels responsive
+    OFFSET = (14, 18)       # cursor → tooltip nudge in pixels
+    MAX_WIDTH = 340
 
     def __init__(self, widget: tk.Widget, text: str) -> None:
         self.widget = widget
@@ -441,13 +559,37 @@ class Tooltip:
         if self._tip is not None:
             return
         t = gui_theme.THEME
-        x = self.widget.winfo_pointerx() + self.OFFSET[0]
-        y = self.widget.winfo_pointery() + self.OFFSET[1]
+        # Skip if the underlying widget has been destroyed (e.g. tab rebuilt).
+        try:
+            x = self.widget.winfo_pointerx() + self.OFFSET[0]
+            y = self.widget.winfo_pointery() + self.OFFSET[1]
+        except Exception:
+            return
+
         tip = tk.Toplevel(self.widget)
-        tip.wm_overrideredirect(True)
+        # overrideredirect removes window decorations; transient + topmost +
+        # lift make sure the popup actually surfaces above the main window
+        # on every platform we care about. Without these the popup can render
+        # behind the main window on tiling WMs / older Tk builds and look
+        # like the tooltip system "doesn't work."
+        try:
+            tip.wm_overrideredirect(True)
+        except Exception:
+            pass
+        try:
+            tip.wm_attributes("-topmost", True)
+        except Exception:
+            pass
+        try:
+            tip.transient(self.widget.winfo_toplevel())
+        except Exception:
+            pass
         tip.wm_geometry(f"+{x}+{y}")
+
         # A two-layer frame fakes a 1px outline since ttk.Frame can't easily
-        # carry a coloured border on Tk's clam theme.
+        # carry a coloured border on Tk's clam theme. Use a high-contrast
+        # cream-on-burgundy border so the popup reads regardless of which
+        # theme is active.
         outer = tk.Frame(tip, background=t.ACCENT_AMBER, padx=1, pady=1)
         outer.pack()
         inner = tk.Frame(outer, background=t.BG_ELEVATED, padx=10, pady=8)
@@ -462,6 +604,10 @@ class Tooltip:
             justify="left",
         )
         lbl.pack()
+        try:
+            tip.lift()
+        except Exception:
+            pass
         self._tip = tip
 
     def _hide(self) -> None:

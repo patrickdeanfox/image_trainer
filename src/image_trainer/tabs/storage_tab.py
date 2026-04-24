@@ -207,8 +207,9 @@ class _StorageState:
         if not path.exists():
             # Create empty so the OS can open it; matches gui_helpers.open_folder behaviour.
             messagebox.showinfo(
-                "Empty folder",
-                f"{key} doesn't exist yet. Run the relevant pipeline step first.",
+                f"{key}/ doesn't exist yet",
+                f"This folder is created by an earlier pipeline step. "
+                f"Run prep / caption / train / generate first to populate it.",
             )
             return
         gui_helpers.open_folder(path)
@@ -254,21 +255,27 @@ class _StorageState:
         # second requires the user to type the project name. Belt + braces
         # because this wipes a directory the user spent hours captioning.
         ok = messagebox.askokcancel(
-            "Delete entire project",
-            f"This will permanently delete:\n\n  {root}\n\n"
-            f"Total on disk: {gui_helpers.format_bytes(b)} across {n} files.\n\n"
-            f"You will lose every image, caption, checkpoint, and trained LoRA "
-            f"under this project. Continue?",
+            f"Delete project '{root.name}'?",
+            f"Permanently deletes everything under:\n\n  {root}\n\n"
+            f"On disk: {gui_helpers.format_bytes(b)} across {n} files.\n\n"
+            f"You will lose every source image, caption, training checkpoint, "
+            f"and trained LoRA in this project. This cannot be undone, and "
+            f"there is no trash or backup.\n\n"
+            f"Continue to the typed-confirmation step?",
         )
         if not ok:
             return
         typed = simpledialog.askstring(
-            "Confirm by typing the project name",
-            f"To confirm, type the project folder name exactly:\n\n  {root.name}",
+            "Type the project name to confirm",
+            f"Type this project's folder name exactly to delete it:\n\n  "
+            f"{root.name}\n\nLeave blank or type anything else to cancel.",
             parent=self.gui.root,
         )
         if (typed or "").strip() != root.name:
-            messagebox.showinfo("Cancelled", "Project name didn't match — nothing deleted.")
+            messagebox.showinfo(
+                "Cancelled — nothing deleted",
+                "The name you typed didn't match. Project is untouched.",
+            )
             return
         try:
             shutil.rmtree(root)

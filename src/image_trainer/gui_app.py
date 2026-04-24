@@ -115,6 +115,23 @@ class TrainerGUI:
         PAD = gui_theme.PAD
         self._build_header()
 
+        # Pack-order matters: bottom-anchored widgets claim their height
+        # FIRST so the notebook (with fill="both" expand=True) only fills
+        # the leftover middle space. Doing this in declaration order
+        # (notebook first, then log_pane, then status) lets a tall tab
+        # like Generate balloon the notebook and squeeze the telemetry
+        # pane / status bar off the bottom of the window.
+        self.status_var = tk.StringVar(value="ready")
+        status = ttk.Label(self.root, textvariable=self.status_var,
+                           style="Status.TLabel", anchor="w")
+        status.pack(side="bottom", fill="x", padx=PAD, pady=(4, PAD))
+
+        # Build the log pane next; it also packs side="bottom" so it sits
+        # immediately above the status bar regardless of tab content size.
+        self._build_log_pane()
+
+        # Notebook fills whatever's left between the header and the
+        # bottom-anchored log + status widgets.
         self.nb = ttk.Notebook(self.root)
         self.nb.pack(fill="both", expand=True, padx=PAD, pady=(PAD // 2, 0))
 
@@ -147,13 +164,6 @@ class TrainerGUI:
         video_tab.build(self)
 
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-
-        self._build_log_pane()
-
-        self.status_var = tk.StringVar(value="ready")
-        status = ttk.Label(self.root, textvariable=self.status_var,
-                           style="Status.TLabel", anchor="w")
-        status.pack(fill="x", padx=PAD, pady=(4, PAD))
 
     def _build_header(self) -> None:
         """Compact single-strip header with title, project combo, recent menu, status dots."""
@@ -220,7 +230,10 @@ class TrainerGUI:
         PAD = gui_theme.PAD
 
         self.log_pane = CollapsibleFrame(self.root, text="Telemetry", start_open=True)
-        self.log_pane.pack(fill="both", expand=False, padx=PAD, pady=(PAD, 0))
+        # Bottom-anchored so the notebook can't push it off-screen when a
+        # tab's content is taller than the window. See _build_ui's
+        # pack-order comment for why this matters.
+        self.log_pane.pack(side="bottom", fill="both", expand=False, padx=PAD, pady=(PAD, 0))
 
         self.log = scrolledtext.ScrolledText(
             self.log_pane.body, height=10, state="disabled",
@@ -242,7 +255,11 @@ class TrainerGUI:
 
     def require_project(self) -> Optional[Project]:
         if not self.current_project:
-            messagebox.showerror("No project", "Create or open a project first.")
+            messagebox.showerror(
+                "No project loaded",
+                "Pick a project from the dropdown at the top of the window, "
+                "or click 'New…' to create one before running this step.",
+            )
             return None
         return self.current_project
 
@@ -571,6 +588,14 @@ class TrainerGUI:
     def _route_progress(self, line: str) -> None:
         if self.train_state is not None:
             self.train_state.on_progress_line(line)
+        # Generate-tab progress runs off the same log queue. Cheap no-op
+        # when no generate run is active.
+        gs = getattr(self, "generate_state", None)
+        if gs is not None:
+            try:
+                gs.on_progress_line(line)
+            except Exception:
+                pass
 
 
 _TAB_INDEX = {

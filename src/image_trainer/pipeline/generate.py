@@ -28,6 +28,45 @@ from typing import Iterable, Optional
 from ..config import Project
 
 
+def _encode_long_prompt(pipe, prompt: str, negative: Optional[str]):
+    """Encode prompts of any length using ``compel``, bypassing CLIP's 77-token cap.
+
+    SDXL's CLIP encoders truncate at 77 tokens. With the Pony score-stack
+    opener already eating ~10 tokens, that leaves ~60 for actual content —
+    nowhere near enough for the descriptive prompts NSFW work needs. The
+    `compel` library chunks long prompts into 77-token windows and
+    concatenates the resulting embeddings before they hit the UNet, which
+    is the standard fix for this in the diffusers ecosystem.
+
+    Returns ``(prompt_embeds, pooled_prompt_embeds, negative_prompt_embeds,
+    negative_pooled_prompt_embeds)`` ready to pass to the pipeline. Returns
+    ``None`` if compel isn't installed — caller falls back to the truncated
+    raw-string path.
+    """
+    try:
+        from compel import Compel, ReturnedEmbeddingsType  # type: ignore
+    except ImportError:
+        return None
+
+    # NOTE: variable name is `encoder` not `compel` to avoid shadowing the
+    # `compel` module — confusing for readers + future-proof if anyone adds
+    # a `from compel import something_else` to this function.
+    encoder = Compel(
+        tokenizer=[pipe.tokenizer, pipe.tokenizer_2],
+        text_encoder=[pipe.text_encoder, pipe.text_encoder_2],
+        returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
+        requires_pooled=[False, True],
+    )
+    pos_embeds, pos_pooled = encoder(prompt)
+    neg_embeds, neg_pooled = encoder(negative or "")
+    # Both conditioning tensors have to share the same sequence length —
+    # compel pads them up to whichever is longer.
+    pos_embeds, neg_embeds = encoder.pad_conditioning_tensors_to_same_length(
+        [pos_embeds, neg_embeds]
+    )
+    return pos_embeds, pos_pooled, neg_embeds, neg_pooled
+
+
 def generate(
     project: Project,
     prompt: str,
@@ -41,6 +80,7 @@ def generate(
     width: int = 1024,
     height: int = 1024,
     sampler: str = "default",
+    output_name: str = "",
 ) -> list[Path]:
     """Generate `n` images with the project's base checkpoint and optional LoRAs.
 
@@ -102,6 +142,40 @@ def generate(
             str(base), torch_dtype=torch.float16
         )
 
+    # ---- Sampler swap (BEFORE LoRA load) ----
+    # Diffusers' default for SDXL is EulerDiscrete but DPM++ 2M and UniPC
+    # are widely preferred for portrait realism + NSFW work because they
+    # converge faster (good output at 20-25 steps vs 30-40 for Euler).
+    # Each scheduler is constructed from the pipe's current scheduler
+    # config so SDXL-specific timestep settings carry over.
+    #
+    # We swap the scheduler BEFORE loading LoRA adapters so any scheduler-
+    # specific state initialisation that the LoRA loader's
+    # set_adapters() depends on sees a clean baseline.
+    if sampler and sampler != "default":
+        from diffusers import (
+            DPMSolverMultistepScheduler,
+            EulerAncestralDiscreteScheduler,
+            EulerDiscreteScheduler,
+            UniPCMultistepScheduler,
+        )
+        scheduler_map = {
+            "euler": EulerDiscreteScheduler,
+            "euler_a": EulerAncestralDiscreteScheduler,
+            "dpmpp_2m": DPMSolverMultistepScheduler,
+            "dpmpp_2m_karras": DPMSolverMultistepScheduler,
+            "unipc": UniPCMultistepScheduler,
+        }
+        cls = scheduler_map.get(sampler)
+        if cls is not None:
+            kwargs = {}
+            if sampler == "dpmpp_2m_karras":
+                kwargs["use_karras_sigmas"] = True
+            pipe.scheduler = cls.from_config(pipe.scheduler.config, **kwargs)
+            print(f"Sampler set to {sampler}", flush=True)
+        else:
+            print(f"Unknown sampler {sampler!r}; keeping default.", flush=True)
+
     # ---- LoRA stacking ----
     # Load adapters one at a time with distinct names, then activate them
     # together with their relative weights. This is more stable than the
@@ -110,8 +184,18 @@ def generate(
     adapter_names: list[str] = []
     adapter_weights: list[float] = []
     if use_trained_lora:
+        # Be EXPLICIT about which file to load. train.py writes both:
+        #   <lora_dir>/pytorch_lora_weights.safetensors  (diffusers flat format)
+        #   <lora_dir>/unet/adapter_model.safetensors    (PEFT subdir format)
+        # Without weight_name, diffusers' loader has historically dispatched
+        # ambiguously between these — which is exactly the
+        # "no file named pytorch_lora_weights.bin" error the user hit even
+        # though the file existed. Naming the file explicitly removes any
+        # heuristic from the equation.
         pipe.load_lora_weights(
-            str(project.lora_dir), adapter_name="trained",
+            str(project.lora_dir),
+            weight_name="pytorch_lora_weights.safetensors",
+            adapter_name="trained",
         )
         adapter_names.append("trained")
         adapter_weights.append(1.0)
@@ -138,35 +222,7 @@ def generate(
         # Pure base-model render — log so the user is sure we did what they asked.
         print("Base-model render (no LoRAs).", flush=True)
 
-    # Optional sampler swap. Diffusers' default for SDXL is EulerDiscrete
-    # but DPM++ 2M and UniPC are widely preferred for portrait realism +
-    # NSFW work because they converge faster (good output at 20-25 steps
-    # vs 30-40 for Euler). Each scheduler is constructed from the pipe's
-    # current scheduler config so SDXL-specific timestep settings carry
-    # over.
-    if sampler and sampler != "default":
-        from diffusers import (
-            DPMSolverMultistepScheduler,
-            EulerAncestralDiscreteScheduler,
-            EulerDiscreteScheduler,
-            UniPCMultistepScheduler,
-        )
-        scheduler_map = {
-            "euler": EulerDiscreteScheduler,
-            "euler_a": EulerAncestralDiscreteScheduler,
-            "dpmpp_2m": DPMSolverMultistepScheduler,
-            "dpmpp_2m_karras": DPMSolverMultistepScheduler,
-            "unipc": UniPCMultistepScheduler,
-        }
-        cls = scheduler_map.get(sampler)
-        if cls is not None:
-            kwargs = {}
-            if sampler == "dpmpp_2m_karras":
-                kwargs["use_karras_sigmas"] = True
-            pipe.scheduler = cls.from_config(pipe.scheduler.config, **kwargs)
-            print(f"Sampler set to {sampler}", flush=True)
-        else:
-            print(f"Unknown sampler {sampler!r}; keeping default.", flush=True)
+    # (Sampler swap moved to BEFORE LoRA load above.)
 
     try:
         pipe.enable_xformers_memory_efficient_attention()
@@ -174,28 +230,99 @@ def generate(
         pass
     pipe.enable_model_cpu_offload()
 
-    out_dir = project.outputs_dir / dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Output dir naming. By default we get an unambiguous, sortable
+    # YYYYMMDD_HHMMSS folder. When the caller passes ``output_name``, it's
+    # sanitised (filesystem-safe) and prefixed onto the same timestamp so
+    # the user can scan their outputs/ folder by purpose ("photoshoot",
+    # "comparison_run", etc.) while keeping a unique per-run suffix.
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder = timestamp
+    if output_name and output_name.strip():
+        # Allow letters, digits, underscore, hyphen — replace everything
+        # else with underscore. Avoid empty / dot-prefixed leading.
+        safe = "".join(
+            c if (c.isalnum() or c in "_-") else "_"
+            for c in output_name.strip()
+        ).strip("_")
+        if safe:
+            folder = f"{safe}_{timestamp}"
+    out_dir = project.outputs_dir / folder
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    generator = None
-    if seed is not None:
-        generator = torch.Generator(device="cuda").manual_seed(seed)
+    # NOTE: the per-image generator is constructed inside the loop below so
+    # each image gets its own deterministic seed (`seed + i`). Using a
+    # single generator across the loop would leak RNG state from image i to
+    # image i+1, which means rerunning with the same `seed` only reproduces
+    # image 0 — not the whole batch.
+    generator = None  # set per-iteration when seed is supplied
 
     # Empty string disables the negative prompt — make the intent explicit
     # rather than relying on truthy-to-None coercion.
     negative_prompt = negative if negative else None
 
+    # Try to compute long-prompt embeddings via compel. If it works, we
+    # bypass CLIP's 77-token truncation entirely and pass the embeddings
+    # directly. If compel isn't installed, fall back to the raw-string
+    # path with a clear warning so the user knows their prompt was cut.
+    long_prompt = _encode_long_prompt(pipe, prompt, negative_prompt)
+    if long_prompt is None:
+        # Fallback path. Diffusers' tokenizer will truncate at 77 tokens
+        # and silently print a warning. Estimate the token count so we
+        # can warn the user explicitly when truncation will happen.
+        try:
+            tok_count = len(pipe.tokenizer.tokenize(prompt))
+        except Exception:
+            tok_count = 0
+        if tok_count > 75:
+            print(
+                f"WARNING: prompt is ~{tok_count} tokens; CLIP's 77-token cap "
+                f"means everything past ~token 77 will be silently dropped. "
+                f"Install 'compel' for long-prompt support: "
+                f"pip install compel",
+                flush=True,
+            )
+        prompt_embeds = pooled_embeds = neg_embeds = neg_pooled = None
+    else:
+        prompt_embeds, pooled_embeds, neg_embeds, neg_pooled = long_prompt
+        print(
+            f"Long-prompt encoding via compel "
+            f"(prompt embeds shape: {tuple(prompt_embeds.shape)})",
+            flush=True,
+        )
+
     results: list[Path] = []
     for i in range(n):
-        image = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            num_inference_steps=steps,
-            guidance_scale=guidance,
-            generator=generator,
-            width=width,
-            height=height,
-        ).images[0]
+        # Per-image generator. Using `seed + i` rather than reusing one
+        # generator across iterations means rerunning with the same seed
+        # reproduces the WHOLE batch, not just image 0.
+        if seed is not None:
+            generator = torch.Generator(device="cuda").manual_seed(seed + i)
+        else:
+            generator = None
+        if prompt_embeds is not None:
+            # Embedding path — prompt + negative are already encoded.
+            image = pipe(
+                prompt_embeds=prompt_embeds,
+                pooled_prompt_embeds=pooled_embeds,
+                negative_prompt_embeds=neg_embeds,
+                negative_pooled_prompt_embeds=neg_pooled,
+                num_inference_steps=steps,
+                guidance_scale=guidance,
+                generator=generator,
+                width=width,
+                height=height,
+            ).images[0]
+        else:
+            # Raw-string fallback (will truncate at 77 tokens).
+            image = pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                num_inference_steps=steps,
+                guidance_scale=guidance,
+                generator=generator,
+                width=width,
+                height=height,
+            ).images[0]
         out_path = out_dir / f"{i:03d}.png"
         image.save(out_path)
         print(f"Saved {out_path}", flush=True)

@@ -331,6 +331,7 @@ def _cmd_generate(args: argparse.Namespace) -> None:
         width=args.width,
         height=args.height,
         sampler=args.sampler,
+        output_name=args.output_name or "",
     )
 
 
@@ -590,6 +591,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Diffusers scheduler to use. 'dpmpp_2m_karras' and 'unipc' "
             "converge fastest (good output at 20-25 steps). 'euler_a' is the "
             "classic ancestral choice for varied outputs."
+        ),
+    )
+    sp.add_argument(
+        "--output-name",
+        default=None,
+        help=(
+            "Optional human-friendly name for this run's output folder. "
+            "The folder becomes outputs/<name>_<timestamp>/ instead of "
+            "outputs/<timestamp>/. Sanitised: anything that isn't a letter, "
+            "digit, underscore or hyphen is replaced with underscore."
         ),
     )
     sp.set_defaults(func=_cmd_generate)

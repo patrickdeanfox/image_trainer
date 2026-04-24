@@ -12,11 +12,29 @@ cd image_trainer
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .                    # core (BLIP captioner only)
 pip install -e ".[wd14]"            # + WD14 NSFW-aware tag captioner
-pip install -e ".[xformers]"        # + xformers memory-efficient attention
+pip install -e ".[prompts]"         # + compel for long-prompt support (>77 tokens)
 pip install facenet-pytorch --no-deps   # + face-aware prep crop (see note below)
 ```
 
 Or just run `./launch.sh` — it bootstraps the venv on first run, does `pip install -e .`, and opens the GUI. `./launch.sh --reset` wipes and reinstalls the venv.
+
+### xformers — install carefully (not from PyPI)
+
+xformers gives you ~15-20% faster training via memory-efficient attention. **Do NOT use `pip install xformers` from PyPI** — that wheel is built against a specific torch version and will silently overwrite your working torch install with a mismatched one. The classic symptom is `ImportError: undefined symbol: ncclCommWindowDeregister` the next time you import torch.
+
+Install matched wheels from the official PyTorch index instead. Pick the line for your CUDA version (`nvidia-smi` top-right shows it):
+
+```bash
+# CUDA 12.1 (most common)
+.venv/bin/pip install --force-reinstall --index-url https://download.pytorch.org/whl/cu121 \
+    torch==2.4.1 torchvision==0.19.1 xformers==0.0.28.post1
+
+# CUDA 12.4
+.venv/bin/pip install --force-reinstall --index-url https://download.pytorch.org/whl/cu124 \
+    torch==2.4.1 torchvision==0.19.1 xformers==0.0.28.post1
+```
+
+The training loop's `use_xformers` flag soft-falls back to PyTorch SDPA when xformers is missing, so skipping this step is fine — you just lose the speedup. If you already broke your install by running `pip install xformers` from PyPI, run the matched-wheel command above with `--force-reinstall` and it'll repair the breakage.
 
 **Why `--no-deps` on `facenet-pytorch`?** It pins `torch<2.3.0`, which would downgrade the torch + torchvision your trainer uses and break `bitsandbytes` and the rest of the pipeline. MTCNN doesn't actually need an old torch — it works fine on the current torch. `--no-deps` installs just the MTCNN code and weights without touching anything else. If face-aware crop is missing, prep silently falls back to centre-crop.
 
@@ -220,7 +238,15 @@ Always preserves `lora/`, `outputs/`, `logs/`, `config.json`, `review.json`. Pro
 
 ## Troubleshooting
 
-**OOM during training (UNet upcast).** Already mitigated — UNet is now cast to fp32 on CPU first, then moved to GPU as a single allocation. If you still OOM, drop resolution 1024 → 768 (invalidates cache), drop `lora_rank` 32 → 16, raise `gradient_accumulation_steps`, disable `train_text_encoder`, or keep `use_xformers=True`.
+**OOM during training.** Already mitigated — the UNet stays in fp16 on GPU (the base weights are frozen for LoRA training; only PEFT's small fp32 LoRA adapters need to train). Earlier code mistakenly upcast the UNet to fp32 which is ~10 GB of weights alone — won't fit on a 10 GB card. If you still OOM, drop resolution 1024 → 768 (invalidates cache), drop `lora_rank` 32 → 16, raise `gradient_accumulation_steps`, disable `train_text_encoder`, or keep `use_xformers=True`.
+
+**`ImportError: undefined symbol: ncclCommWindowDeregister`.** Your torch + NCCL stack is mismatched, almost always because something pip-installed `xformers` (or another torch-dependent package) and quietly pulled a different torch version. Recovery is in the **xformers — install carefully** section above: pip uninstall the entire torch + nvidia-* stack, then reinstall a matched triad from PyTorch's `--index-url`.
+
+**`ValueError: infer_schema(func): Parameter q has unsupported type torch.Tensor`.** Your diffusers is too new for torch 2.4.1. Diffusers 0.33+ introduced `attention_dispatch.py` using PEP 604 union syntax that older torch doesn't parse. Fix: `pip install "diffusers>=0.30,<0.32"`. The pyproject already pins this range, so a fresh `pip install -e .` produces the right version.
+
+**Generate fails with `Error no file named pytorch_lora_weights.bin found`.** Old issue from before training learned to write the diffusers-flat LoRA format. Re-run training; the loop now writes both `lora/pytorch_lora_weights.safetensors` (what generate loads) AND `lora/unet/adapter_model.safetensors` (PEFT format for `--resume`). If you only have the PEFT-format directory from a stale training run, re-run training to regenerate the flat file.
+
+**Generated images look smooth / airbrushed / ignore half the prompt.** Almost always SDXL CLIP's 77-token cap silently truncating your prompt. Check the CLI output for `WARNING: prompt is ~N tokens; CLIP's 77-token cap…`. Fix: install compel via `pip install -e ".[prompts]"`. Generate then chunks long prompts and your full description reaches the model.
 
 **TE-LoRA refuses to start.** Intentional — the pre-spawn gate refuses TE LoRA on cards under 12 GB because it OOMs reliably. Override (not recommended): `IMAGE_TRAINER_FORCE_TE_LORA=1 trainer train me`.
 
