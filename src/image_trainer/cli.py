@@ -332,6 +332,7 @@ def _cmd_generate(args: argparse.Namespace) -> None:
         height=args.height,
         sampler=args.sampler,
         output_name=args.output_name or "",
+        compare_stacks=args.compare_stacks,
     )
 
 
@@ -601,6 +602,18 @@ def build_parser() -> argparse.ArgumentParser:
             "The folder becomes outputs/<name>_<timestamp>/ instead of "
             "outputs/<timestamp>/. Sanitised: anything that isn't a letter, "
             "digit, underscore or hyphen is replaced with underscore."
+        ),
+    )
+    sp.add_argument(
+        "--compare-stacks",
+        action="store_true",
+        help=(
+            "Render ONE image per defined quality stack using the same prompt "
+            "+ seed, so you can A/B/C compare which stack works best for your "
+            "base + LoRA. In this mode --prompt should be the BODY only "
+            "(no quality prefix) — each stack's prefix is prepended "
+            "automatically. Output goes to outputs/stack_compare_<timestamp>/. "
+            "Overrides --n; the count is determined by the number of stacks."
         ),
     )
     sp.set_defaults(func=_cmd_generate)

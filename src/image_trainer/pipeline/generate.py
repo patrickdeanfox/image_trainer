@@ -81,6 +81,7 @@ def generate(
     height: int = 1024,
     sampler: str = "default",
     output_name: str = "",
+    compare_stacks: bool = False,
 ) -> list[Path]:
     """Generate `n` images with the project's base checkpoint and optional LoRAs.
 
@@ -308,29 +309,116 @@ def generate(
     # sanitised (filesystem-safe) and prefixed onto the same timestamp so
     # the user can scan their outputs/ folder by purpose ("photoshoot",
     # "comparison_run", etc.) while keeping a unique per-run suffix.
+    import random
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    folder = timestamp
-    if output_name and output_name.strip():
+    if compare_stacks:
+        folder = f"stack_compare_{timestamp}"
+    elif output_name and output_name.strip():
         safe = "".join(
             c if (c.isalnum() or c in "_-") else "_"
             for c in output_name.strip()
         ).strip("_")
-        if safe:
-            folder = f"{safe}_{timestamp}"
+        folder = f"{safe}_{timestamp}" if safe else timestamp
+    else:
+        folder = timestamp
     out_dir = project.outputs_dir / folder
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[Path] = []
+    # Per-image seed tracking so filenames include the seed and run_info.txt
+    # can list them. When the user doesn't pass a seed we draw a random
+    # uint32 per image — random-but-known, so the filename still carries it
+    # and the image is reproducible by feeding that seed back.
+    image_seeds: list[int] = []
+
+    if compare_stacks:
+        # Iterate every defined quality stack and render ONE image per
+        # stack using the same seed + body. The `prompt` argument in
+        # compare mode is expected to be the BODY (no quality prefix);
+        # the CLI sets this up via --compare-stacks.
+        from ..prompt_presets import stacks_for_compare
+        stack_iter = stacks_for_compare()
+        # Compare mode wants a single shared seed so the ONLY variable
+        # between outputs is the stack. If seed is None, pick one now.
+        shared_seed = seed if seed is not None else random.randint(0, 2**32 - 1)
+        print(
+            f"Compare-stacks mode: {len(stack_iter)} stacks, shared seed {shared_seed}",
+            flush=True,
+        )
+        for idx, (stack_label, stack_prefix) in enumerate(stack_iter):
+            full_prompt = f"{stack_prefix}{prompt}"
+            # Re-encode the prompt per stack — the prefix changes, so the
+            # embeddings change. Text encoders are still on CPU (we moved
+            # them there after the first encode); move them back briefly.
+            if torch.cuda.is_available():
+                try:
+                    pipe.text_encoder.to("cuda")
+                    pipe.text_encoder_2.to("cuda")
+                except Exception:
+                    pass
+            stack_long = _encode_long_prompt(pipe, full_prompt, negative_prompt)
+            if torch.cuda.is_available():
+                try:
+                    pipe.text_encoder.to("cpu")
+                    pipe.text_encoder_2.to("cpu")
+                except Exception:
+                    pass
+            generator = torch.Generator(device="cuda").manual_seed(shared_seed)
+            if stack_long is not None:
+                se, sp, ne, np_ = stack_long
+                image = pipe(
+                    prompt_embeds=se, pooled_prompt_embeds=sp,
+                    negative_prompt_embeds=ne, negative_pooled_prompt_embeds=np_,
+                    num_inference_steps=steps, guidance_scale=guidance,
+                    generator=generator, width=width, height=height,
+                ).images[0]
+            else:
+                image = pipe(
+                    prompt=full_prompt, negative_prompt=negative_prompt,
+                    num_inference_steps=steps, guidance_scale=guidance,
+                    generator=generator, width=width, height=height,
+                ).images[0]
+            # Filesystem-safe label + seed in filename.
+            safe_label = "".join(
+                c if (c.isalnum() or c in "_-") else "_" for c in stack_label
+            ).strip("_")
+            out_path = out_dir / f"{idx:02d}_{safe_label}_seed{shared_seed}.png"
+            image.save(out_path)
+            print(
+                f"[{idx+1}/{len(stack_iter)}] {stack_label} → {out_path.name}",
+                flush=True,
+            )
+            results.append(out_path)
+            image_seeds.append(shared_seed)
+
+        # Run info captures which stack produced which file.
+        _write_run_info(
+            out_dir=out_dir, mode="compare_stacks",
+            project=project, base_model_path=project.base_model_path,
+            body_or_prompt=prompt, negative=negative_prompt or "",
+            sampler=sampler, steps=steps, guidance=guidance,
+            width=width, height=height,
+            use_trained_lora=use_trained_lora, extras=extras,
+            seeds=image_seeds, stack_labels=[lbl for lbl, _ in stack_iter],
+            compel_active=prompt_embeds is not None,
+        )
+        return results
+
+    # Normal (non-compare) path. Pre-compute the seed list so the filenames
+    # can embed the seed + run_info.txt can list them.
+    if seed is None:
+        image_seeds = [random.randint(0, 2**32 - 1) for _ in range(n)]
+    else:
+        image_seeds = [seed + i for i in range(n)]
+
     for i in range(n):
-        # Per-image generator. Using `seed + i` rather than reusing one
-        # generator across iterations means rerunning with the same seed
-        # reproduces the WHOLE batch, not just image 0.
-        if seed is not None:
-            generator = torch.Generator(device="cuda").manual_seed(seed + i)
-        else:
-            generator = None
+        # Per-image generator with the seed we picked above. Using a fresh
+        # generator per iteration (rather than reusing one across the loop)
+        # is what makes rerunning with the same seed reproduce every image,
+        # not just image 0.
+        s = image_seeds[i]
+        generator = torch.Generator(device="cuda").manual_seed(s)
         if prompt_embeds is not None:
-            # Embedding path — prompt + negative are already encoded.
             image = pipe(
                 prompt_embeds=prompt_embeds,
                 pooled_prompt_embeds=pooled_embeds,
@@ -343,7 +431,6 @@ def generate(
                 height=height,
             ).images[0]
         else:
-            # Raw-string fallback (will truncate at 77 tokens).
             image = pipe(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -353,9 +440,98 @@ def generate(
                 width=width,
                 height=height,
             ).images[0]
-        out_path = out_dir / f"{i:03d}.png"
+        out_path = out_dir / f"{i:03d}_seed{s}.png"
         image.save(out_path)
         print(f"Saved {out_path}", flush=True)
         results.append(out_path)
 
+    _write_run_info(
+        out_dir=out_dir, mode="generate",
+        project=project, base_model_path=project.base_model_path,
+        body_or_prompt=prompt, negative=negative_prompt or "",
+        sampler=sampler, steps=steps, guidance=guidance,
+        width=width, height=height,
+        use_trained_lora=use_trained_lora, extras=extras,
+        seeds=image_seeds, stack_labels=None,
+        compel_active=prompt_embeds is not None,
+    )
     return results
+
+
+def _write_run_info(
+    *,
+    out_dir: Path,
+    mode: str,
+    project: Project,
+    base_model_path: Optional[Path],
+    body_or_prompt: str,
+    negative: str,
+    sampler: str,
+    steps: int,
+    guidance: float,
+    width: int,
+    height: int,
+    use_trained_lora: bool,
+    extras: list,
+    seeds: list[int],
+    stack_labels: Optional[list[str]],
+    compel_active: bool,
+) -> None:
+    """Write ``run_info.txt`` into the output directory so the user can
+    reference the exact settings that produced a set of images.
+
+    Format is human-readable (grep-friendly) rather than JSON so a user
+    can scan dozens of outputs with `less` / `head`. One line per setting,
+    one line per output image with its seed, and the full prompt + negative
+    in dedicated blocks at the end (which are the longest values).
+    """
+    lines: list[str] = []
+    lines.append(f"run_info")
+    lines.append(f"==========")
+    lines.append(f"mode              : {mode}")
+    lines.append(f"timestamp         : {dt.datetime.now().isoformat(timespec='seconds')}")
+    lines.append(f"project           : {project.root.name}  ({project.root})")
+    lines.append(f"base checkpoint   : {base_model_path}")
+    lines.append(f"sampler           : {sampler}")
+    lines.append(f"steps             : {steps}")
+    lines.append(f"guidance (CFG)    : {guidance}")
+    lines.append(f"dimensions        : {width} x {height}")
+    lines.append(f"use trained LoRA  : {use_trained_lora}")
+    lines.append(f"long-prompt compel: {'yes' if compel_active else 'no (raw-string fallback)'}")
+    if extras:
+        lines.append("extra LoRAs       :")
+        for path, weight in extras:
+            lines.append(f"  - {path}  @ weight {weight}")
+    else:
+        lines.append("extra LoRAs       : (none)")
+
+    lines.append("")
+    lines.append("outputs")
+    lines.append("-------")
+    saved_pngs = sorted(p for p in out_dir.iterdir() if p.suffix == ".png")
+    if stack_labels is not None:
+        # compare_stacks mode — pair filenames with the stack that made them.
+        for idx, p in enumerate(saved_pngs):
+            label = stack_labels[idx] if idx < len(stack_labels) else "?"
+            lines.append(f"  {p.name}  ·  stack: {label}")
+    else:
+        for i, p in enumerate(saved_pngs):
+            s = seeds[i] if i < len(seeds) else "?"
+            lines.append(f"  {p.name}  ·  seed: {s}")
+
+    lines.append("")
+    lines.append("prompt")
+    lines.append("------")
+    lines.append(body_or_prompt)
+    lines.append("")
+    lines.append("negative")
+    lines.append("--------")
+    lines.append(negative or "(none)")
+    lines.append("")
+
+    info_path = out_dir / "run_info.txt"
+    try:
+        info_path.write_text("\n".join(lines), encoding="utf-8")
+        print(f"Wrote {info_path}", flush=True)
+    except OSError as e:
+        print(f"WARNING: couldn't write run_info.txt ({e})", flush=True)

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from .. import gui_helpers, gui_theme
 from ..gui_widgets import CollapsibleFrame, ScrollableFrame, info_icon
+from ..prompt_presets import QUALITY_STACKS
 
 if TYPE_CHECKING:
     from ..gui_app import TrainerGUI
@@ -38,113 +39,12 @@ if TYPE_CHECKING:
 # These are the actual recipes the tab proposes. Kept as data tables at the
 # top of the file so they're easy to tune without touching layout code.
 
-#: Quality-tag stacks. Prepended to the user's prompt when picked.
-#: Empty string = no prefix (default — your prompt stands alone).
-#:
-#: IMPORTANT: SDXL CLIP encoders cap at 77 tokens per chunk. Without compel
-#: installed, anything past ~77 tokens gets silently dropped. Stacks below
-#: are kept short (5-10 tokens) so the user has plenty of budget for actual
-#: prompt content. Stylistic anchors that USED to live here (e.g.
-#: "professional nude photography, detailed anatomy") have moved into the
-#: PROMPT_TEMPLATES so they're optional + visible.
-QUALITY_STACKS: list[tuple[str, str, str]] = [
-    (
-        "(none)", "",
-        "No quality prefix — your prompt stands alone. Pick this when you "
-        "want full control over the prompt text.",
-    ),
-    (
-        "Pony · photoreal NSFW (recommended)",
-        "score_9, score_8_up, score_7_up, source_real, rating_explicit, ",
-        "Canonical Pony photoreal NSFW opener — short, ~10 tokens. "
-        "score_X tags are mandatory for Pony quality; rating_explicit "
-        "unlocks the explicit content range; source_real biases toward "
-        "photographic output. Works best on Pony fine-tunes trained on "
-        "photo data (Pony Realism, Lustify XL); on vanilla Pony V6 XL "
-        "output still drifts stylised — use 'Pony · heavy photoreal' "
-        "instead, or switch base.",
-    ),
-    (
-        "Pony · heavy photoreal (anti-anime)",
-        "score_9, score_8_up, score_7_up, source_real, rating_explicit, "
-        "photo, photorealistic, raw photo, real photograph, "
-        "35mm film, skin pores, subsurface scattering, ",
-        "For vanilla Pony V6 XL when the model keeps drifting toward "
-        "anime / illustration. Adds heavier photo anchors — 35mm film, "
-        "skin pores, subsurface scattering — that Pony was trained to "
-        "associate with its photo-distribution. Pair with 'NSFW · "
-        "photoreal push' negative for maximum effect. Bigger token cost "
-        "(~20) — install compel if the rest of your prompt is long.",
-    ),
-    (
-        "Pony · photoreal SFW",
-        "score_9, score_8_up, score_7_up, source_real, rating_safe, ",
-        "Same Pony short stack but with rating_safe instead of "
-        "rating_explicit. Use for SFW portrait / lifestyle work.",
-    ),
-    (
-        "Pony · explicit (heavy)",
-        "score_9, score_8_up, score_7_up, score_6_up, rating_explicit, "
-        "rating_questionable, source_real, ",
-        "Heavier Pony NSFW opener — ~13 tokens. Adds score_6_up + "
-        "rating_questionable to widen the explicit range. Use when the "
-        "base is producing tasteful / implied output and you want it to "
-        "lean more explicit. Costs more token budget.",
-    ),
-    (
-        "Pony · anime / illustrated",
-        "score_9, score_8_up, score_7_up, source_anime, rating_explicit, ",
-        "Pony in anime/hentai mode. source_anime pulls toward Pony's "
-        "illustrated-art training distribution. Combine with anime-style "
-        "LoRAs from the library.",
-    ),
-    (
-        "Illustrious / NoobAI XL",
-        "masterpiece, best quality, very aware, newest, absurdres, ",
-        "Tag stack for Illustrious-XL / NoobAI-XL family checkpoints. "
-        "Different vocabulary from Pony — masterpiece + best quality + "
-        "very aware (NoobAI's anatomy anchor) + newest (recency bias).",
-    ),
-    (
-        "RealVis / Juggernaut · photoreal",
-        "raw photo, dslr, photorealistic, ",
-        "Short realism-tilted opener for RealVisXL / JuggernautXL / "
-        "vanilla SDXL fine-tunes that don't use score_X tags. Pair with "
-        "the NSFW uncensor negative preset for explicit work.",
-    ),
-    (
-        "Photoreal pro (non-Pony) · heavy",
-        "raw photo, professional photograph, dslr, shot on leica, "
-        "35mm film grain, kodak portra 400, natural skin texture, "
-        "skin pores, subsurface scattering, sharp focus, detailed skin, "
-        "photorealistic, hyperrealistic, ",
-        "Heaviest photoreal anchor stack for non-Pony realism bases "
-        "(RealVisXL V5, CyberRealistic XL, EpicRealism XL). Camera + film "
-        "stock + skin-detail vocabulary anchors output firmly in the "
-        "photograph distribution. About 20 tokens; pair with 'NSFW · "
-        "photoreal push' negative. Do NOT use with Pony — the non-Pony "
-        "vocabulary confuses Pony's score_X training.",
-    ),
-    (
-        "Amateur / OnlyFans aesthetic",
-        "iphone photo, smartphone photo, candid snapshot, amateur "
-        "photograph, natural skin, no makeup filter, real woman, "
-        "instagram aesthetic, slight motion blur, ",
-        "Mimics the smartphone + amateur-photography distribution most "
-        "OnlyFans / personal-likeness training datasets are drawn from. "
-        "Best match to the LoRA's training distribution once you have a "
-        "trained LoRA. 'no makeup filter' + 'real woman' actively suppress "
-        "the airbrushed / doll-like output Pony defaults to.",
-    ),
-    (
-        "Lustify / Pony Realism",
-        "score_9, score_8_up, score_7_up, source_real, rating_explicit, "
-        "professional photography, ",
-        "Tuned for Lustify XL and Pony Realism. Pony score stack + "
-        "professional-photography anchor for the magazine look these "
-        "fine-tunes were heavily trained on.",
-    ),
-]
+#: Quality-tag stacks now live in :mod:`image_trainer.prompt_presets` so
+#: the CLI's --compare-stacks loop can iterate the same list. Imported at
+#: top of file. The remaining preset tables (PROMPT_TEMPLATES,
+#: NEGATIVE_PRESETS, BUILDER_*) stay GUI-side — they're consumed only by
+#: this tab.
+# (QUALITY_STACKS moved to image_trainer.prompt_presets — imported above.)
 
 
 #: Prompt templates. The {trigger} token is substituted with the project's
@@ -862,9 +762,20 @@ def build(gui: "TrainerGUI") -> None:
     # Portrait 896×1152 is the SDXL bucket closest to "full body fits in
     # frame, head not cropped." 832×1216 is taller still, often cuts feet.
     gui.aspect_var = tk.StringVar(value="Portrait 896×1152")
-    # Default quality stack is the recommended Pony NSFW opener — matches
-    # the default base most users picked (Pony Diffusion V6 XL).
-    gui.quality_stack_var = tk.StringVar(value="Pony · photoreal NSFW (recommended)")
+    # Default quality stack: read from per-user settings if set, else fall
+    # back to the recommended Pony NSFW opener. The user can change the
+    # default at any time via the "Set as default" button next to the
+    # quality-stack combobox — that writes their current pick back to
+    # .user_settings.json and it persists across launches + projects.
+    _user = gui_helpers.load_user_settings(gui.projects_root.root)
+    _default_stack = _user.get(
+        "default_quality_stack", "Pony · photoreal NSFW (recommended)",
+    )
+    # If the persisted default refers to a stack that no longer exists
+    # (e.g. we renamed one), fall back rather than show an empty combobox.
+    if _default_stack not in [label for label, _, _ in QUALITY_STACKS]:
+        _default_stack = "Pony · photoreal NSFW (recommended)"
+    gui.quality_stack_var = tk.StringVar(value=_default_stack)
     gui.output_name_var = tk.StringVar(value="")
 
     state = _GenerateState(gui)
@@ -883,21 +794,27 @@ def build(gui: "TrainerGUI") -> None:
     # Generate, and have to scroll back down to see anything happening.
     action_bar = ttk.Frame(f)
     action_bar.grid(row=1, column=0, sticky="we", pady=(0, PAD))
-    action_bar.columnconfigure(2, weight=1)
+    action_bar.columnconfigure(3, weight=1)
     state.generate_btn = ttk.Button(
         action_bar, text="Generate", style="Primary.TButton",
         command=state._on_generate,
     )
     state.generate_btn.grid(row=0, column=0, sticky="w")
+    state.compare_btn = ttk.Button(
+        action_bar, text="Compare across all stacks",
+        style="Ghost.TButton",
+        command=state._on_compare_stacks,
+    )
+    state.compare_btn.grid(row=0, column=1, sticky="w", padx=(PAD // 2, 0))
     ttk.Button(
         action_bar, text="Open outputs", style="Ghost.TButton",
         command=state._open_outputs,
-    ).grid(row=0, column=1, sticky="w", padx=(PAD, 0))
+    ).grid(row=0, column=2, sticky="w", padx=(PAD // 2, 0))
     state.progress = ttk.Progressbar(
         action_bar, mode="determinate",
         style="Trainer.Horizontal.TProgressbar",
     )
-    state.progress.grid(row=0, column=2, sticky="we", padx=(PAD, 0))
+    state.progress.grid(row=0, column=3, sticky="we", padx=(PAD, 0))
     state.progress_status_var = tk.StringVar(value="idle")
     ttk.Label(
         f, textvariable=state.progress_status_var, style="Status.TLabel",
@@ -1049,11 +966,15 @@ class _GenerateState:
             state="readonly",
         )
         qs_combo.grid(row=0, column=1, sticky="we", padx=PAD)
-        self.qs_hint_var = tk.StringVar(value=QUALITY_STACKS[0][2])
+        ttk.Button(
+            qs_box, text="Set as default", style="Ghost.TButton",
+            command=self._on_save_default_stack,
+        ).grid(row=0, column=3, sticky="e", padx=(PAD // 2, 0))
+        self.qs_hint_var = tk.StringVar(value=self._stack_hint(self.gui.quality_stack_var.get()))
         ttk.Label(
             qs_box, textvariable=self.qs_hint_var, style="Status.TLabel",
             wraplength=520, justify="left",
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
         qs_combo.bind(
             "<<ComboboxSelected>>", lambda _e: self._on_quality_stack_change(),
         )
@@ -1591,11 +1512,31 @@ class _GenerateState:
 
     def _on_quality_stack_change(self) -> None:
         label = self.gui.quality_stack_var.get()
+        self.qs_hint_var.set(self._stack_hint(label))
+        self._refresh_assembled()
+
+    @staticmethod
+    def _stack_hint(label: str) -> str:
+        """Return the hover-hint text for a given quality-stack label."""
         for name, _prefix, hint in QUALITY_STACKS:
             if name == label:
-                self.qs_hint_var.set(hint)
-                break
-        self._refresh_assembled()
+                return hint
+        return ""
+
+    def _on_save_default_stack(self) -> None:
+        """Persist the currently-selected quality stack as this user's default.
+
+        Writes to ``<projects_root>/.user_settings.json`` so the choice
+        survives restarts and applies to every project.
+        """
+        label = self.gui.quality_stack_var.get()
+        gui_helpers.update_user_setting(
+            self.gui.projects_root.root, "default_quality_stack", label,
+        )
+        self.gui.status_var.set(f"Default quality stack saved: {label}")
+        self.gui.log_queue.put(
+            f"[default quality stack saved: {label}]\n"
+        )
 
     def _on_template_change(self) -> None:
         label = self.tpl_var.get()
@@ -1727,6 +1668,83 @@ class _GenerateState:
         if not self.gui.current_project:
             return
         gui_helpers.open_folder(self.gui.current_project.outputs_dir)
+
+    def _on_compare_stacks(self) -> None:
+        """Render ONE image per defined quality stack with the same body
+        + seed so the user can A/B/C the stacks side-by-side.
+
+        Sends the prompt BODY only (no quality prefix) — the CLI iterates
+        through every stack and prepends each prefix. Useful for picking
+        which stack to keep as your default.
+        """
+        project = self.gui.require_project()
+        if not project:
+            return
+        self.gui.save_settings_silent()
+
+        # The body alone — DO NOT add the currently-selected quality stack
+        # prefix; the CLI will iterate every stack itself.
+        body = self.prompt_text.get("1.0", "end").strip()
+        if not body:
+            messagebox.showerror(
+                "Prompt is empty",
+                "Type a prompt body before running compare-stacks. The "
+                "comparison only varies the quality stack — your body has "
+                "to describe the actual subject + scene.",
+            )
+            return
+
+        # Stack count drives image count for the progress bar.
+        from ..prompt_presets import stacks_for_compare
+        n_stacks = len(stacks_for_compare())
+
+        ok = messagebox.askokcancel(
+            "Compare across all quality stacks?",
+            f"Will render {n_stacks} images — one per defined quality stack — "
+            f"using the same prompt body + seed. Output goes to "
+            f"outputs/stack_compare_<timestamp>/ with each file labelled by "
+            f"the stack that produced it. Total time: roughly "
+            f"{n_stacks * 15} seconds at your throughput.\n\n"
+            f"Tip: lock a seed first (Sampler & dimensions section) so the "
+            f"only variable between outputs is the stack itself.",
+        )
+        if not ok:
+            return
+
+        # Resolve aspect ratio.
+        width, height = 1024, 1024
+        for label, w, h in ASPECT_RATIOS:
+            if label == self.gui.aspect_var.get():
+                width, height = w, h
+                break
+
+        args = [
+            "generate",
+            str(project.root),
+            "--prompt", body,                          # BODY ONLY in compare mode
+            "--steps", self.gui.steps_var.get() or "28",
+            "--guidance", self.gui.guidance_var.get() or "5.5",
+            "--width", str(width),
+            "--height", str(height),
+            "--sampler", self.gui.sampler_var.get() or "default",
+            "--compare-stacks",
+        ]
+        # Use the currently-selected negative preset.
+        neg = self.gui.negative_var.get().strip()
+        if neg:
+            args += ["--negative", neg]
+        # Honour the seed if set so reruns are bit-identical.
+        seed = self.gui.seed_var.get().strip()
+        if seed:
+            args += ["--seed", seed]
+        if not self.gui.use_trained_lora_var.get():
+            args.append("--no-trained-lora")
+        for path, weight in self.selected_extras():
+            args += ["--extra-lora", f"{path}:{weight}"]
+
+        self._begin_run(n_stacks)
+        self.gui.on_next_exit = self._end_run
+        self.gui.spawn(args)
 
     # ---- live progress hooks driven by gui_app._drain_log ----
 
