@@ -156,8 +156,15 @@ def _validate_or_reset_cache(project: Project) -> None:
     marker_path.write_text(json.dumps(current, indent=2))
 
 
-def _select_training_pngs(project: Project) -> list[Path]:
+def _select_training_pngs(
+    project: Project, limit: Optional[int] = None
+) -> list[Path]:
     """List processed PNGs, filtered by the pre-training review.
+
+    ``limit`` (optional positive int) further caps the result to the first
+    ``N`` PNGs after the review filter — used by the GUI's "Images per run"
+    picker to make short runs possible. The cap is applied AFTER the review
+    filter so the user's include/exclude decisions are always respected.
 
     Raises:
         RuntimeError: if the project has no processed images or every image
@@ -179,7 +186,15 @@ def _select_training_pngs(project: Project) -> list[Path]:
             f"Open the Review tab and mark some as included."
         )
     excluded = len(all_pngs) - len(pngs)
-    if excluded > 0:
+    full_count = len(pngs)
+    if limit is not None and limit > 0 and limit < full_count:
+        pngs = pngs[:limit]
+        print(
+            f"Review: training on {len(pngs)}/{full_count} included images "
+            f"(limit-images={limit}; {excluded} excluded total).",
+            flush=True,
+        )
+    elif excluded > 0:
         print(
             f"Review: training on {len(pngs)}/{len(all_pngs)} images "
             f"({excluded} excluded).",
@@ -297,7 +312,10 @@ def _cache_text_embeddings(project: Project, pipe, pngs: list[Path], device: str
     return embed_paths
 
 
-def _cache_embeddings_and_latents(project: Project, pipe, device: str = "cuda") -> list[dict]:
+def _cache_embeddings_and_latents(
+    project: Project, pipe, device: str = "cuda",
+    limit_images: Optional[int] = None,
+) -> list[dict]:
     """Cached-embeddings path: latents *and* text embeds pre-computed once,
     then both VAE and TEs offloaded to CPU. Used when ``train_text_encoder``
     is False (the default); returns a list of
@@ -305,7 +323,7 @@ def _cache_embeddings_and_latents(project: Project, pipe, device: str = "cuda") 
     loop's per-step ``torch.load`` calls.
     """
     _validate_or_reset_cache(project)
-    pngs = _select_training_pngs(project)
+    pngs = _select_training_pngs(project, limit=limit_images)
     latent_paths = _cache_vae_latents(project, pipe, pngs, device)
     embed_paths = _cache_text_embeddings(project, pipe, pngs, device)
     return [
@@ -314,7 +332,10 @@ def _cache_embeddings_and_latents(project: Project, pipe, device: str = "cuda") 
     ]
 
 
-def _build_live_dataset(project: Project, pipe, device: str) -> list[dict]:
+def _build_live_dataset(
+    project: Project, pipe, device: str,
+    limit_images: Optional[int] = None,
+) -> list[dict]:
     """Live-encoders path: cache only VAE latents (VAE still doesn't train),
     but keep both text encoders resident on GPU and pre-tokenize every
     caption. The training loop encodes captions fresh every step so TE LoRA
@@ -329,7 +350,7 @@ def _build_live_dataset(project: Project, pipe, device: str) -> list[dict]:
         ``"stem"``    -> image stem
     """
     _validate_or_reset_cache(project)
-    pngs = _select_training_pngs(project)
+    pngs = _select_training_pngs(project, limit=limit_images)
     latent_paths = _cache_vae_latents(project, pipe, pngs, device)
 
     tokenizer = pipe.tokenizer
@@ -611,8 +632,16 @@ def train_lora(
     max_steps_override: Optional[int] = None,
     progress_cb: Optional[ProgressCb] = None,
     note: str = "",
+    limit_images: Optional[int] = None,
 ) -> Path:
-    """Run LoRA training. Returns the path to the exported LoRA directory."""
+    """Run LoRA training. Returns the path to the exported LoRA directory.
+
+    ``limit_images`` (optional, positive int) caps how many included images
+    this run trains on. The first ``N`` stems from the alphabetical
+    included list are used; everything else is ignored for this run only.
+    Does not affect the cache — entries for the N stems are reused if they
+    exist, otherwise they get cached fresh.
+    """
     import torch
     from accelerate import Accelerator
     from diffusers import DDPMScheduler
@@ -631,6 +660,28 @@ def train_lora(
         )
     if not torch.cuda.is_available():
         raise RuntimeError("train_lora requires a CUDA GPU.")
+
+    # ---- VRAM gate: TE LoRA needs ~12 GB; on smaller cards it OOMs at
+    # the first ``unet.to(device)`` because both text encoders are already
+    # resident. Catch this BEFORE we burn time loading the base checkpoint
+    # (which on a cold cache means downloading several GB of HF assets).
+    # Override with ``IMAGE_TRAINER_FORCE_TE_LORA=1`` if you want to live
+    # dangerously (e.g. someone with 11 GB on a Linux card with no display
+    # compositor stealing 1 GB).
+    import os
+    if project.train_text_encoder and not os.environ.get("IMAGE_TRAINER_FORCE_TE_LORA"):
+        total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        if total_gb < 12.0:
+            raise RuntimeError(
+                f"Text-encoder LoRA needs ~12 GB of VRAM and your card has "
+                f"{total_gb:.1f} GB. The run would OOM at unet.to(device) "
+                f"before training even starts.\n\n"
+                f"Fix one of these in the GUI Settings tab:\n"
+                f"  • Uncheck 'Text-encoder LoRA' (recommended for 10 GB cards)\n"
+                f"  • Drop resolution to 768 (less help; TEs are still resident)\n"
+                f"  • Drop LoRA rank to 16\n\n"
+                f"Override (not recommended): set IMAGE_TRAINER_FORCE_TE_LORA=1 in your environment."
+            )
 
     project.ensure_dirs()
     log_path = project.logs_dir / f"training_{int(time.time())}.log"
@@ -661,16 +712,46 @@ def train_lora(
                 "TE LoRA enabled: caching latents only, keeping text encoders on GPU...",
                 flush=True,
             )
-            entries = _build_live_dataset(project, pipe, device=str(device))
+            entries = _build_live_dataset(
+                project, pipe, device=str(device), limit_images=limit_images,
+            )
         else:
             print("Caching latents + text embeddings (one-time per image)...", flush=True)
-            entries = _cache_embeddings_and_latents(project, pipe, device=str(device))
+            entries = _cache_embeddings_and_latents(
+                project, pipe, device=str(device), limit_images=limit_images,
+            )
         n = len(entries)
         if n == 0:
             raise RuntimeError("No training entries after caching; aborting.")
 
+        # ---- safe UNet upcast (10 GB VRAM friendly) ----
+        # The naive ``unet.to(device, dtype=torch.float32)`` does device + dtype
+        # in one step. PyTorch can't do that in-place when the dtype changes,
+        # so it allocates the fp32 destination on GPU while the fp16 source is
+        # still resident. On a 10 GB card with caching residue this trips OOM
+        # before the first training step.
+        #
+        # Robust path: belt-and-braces offload the encoders we just used (the
+        # offload calls inside ``_cache_*`` do this too, but PyTorch's caching
+        # allocator can hold fragments), force a gc + empty_cache, then cast
+        # the UNet to fp32 ON CPU first. The CPU dtype-conversion hits the
+        # user's plentiful RAM, and the eventual move to GPU is a clean
+        # single allocation.
+        import gc
+        if not project.train_text_encoder:
+            # In the live-encoders path the TEs are intentionally resident on
+            # GPU; only offload them when we're not training them.
+            pipe.text_encoder.to("cpu")
+            pipe.text_encoder_2.to("cpu")
+        pipe.vae.to("cpu")
+        gc.collect()
+        torch.cuda.empty_cache()
+
         unet = pipe.unet
-        unet.to(device, dtype=torch.float32)
+        unet.to("cpu", dtype=torch.float32)   # cast in CPU RAM, not on GPU
+        gc.collect()
+        torch.cuda.empty_cache()
+        unet.to(device)                        # then a single clean GPU alloc
         unet.enable_gradient_checkpointing()
 
         lora_config = LoraConfig(

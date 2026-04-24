@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from .. import gui_helpers, gui_theme
 from ..config import Project
-from ..gui_widgets import FolderField
+from ..gui_widgets import FolderField, info_icon
 
 if TYPE_CHECKING:
     from ..gui_app import TrainerGUI
@@ -43,19 +43,36 @@ def build(gui: "TrainerGUI") -> None:
         row=0, column=0, columnspan=3, sticky="w", pady=(0, PAD)
     )
 
-    ttk.Label(f, text="Trigger word:").grid(row=1, column=0, sticky="w", pady=2)
-    ttk.Entry(f, textvariable=gui.trigger_var, width=30).grid(
-        row=1, column=1, sticky="w", padx=PAD
-    )
+    trigger_row = ttk.Frame(f)
+    trigger_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+    ttk.Label(trigger_row, text="Trigger word:").pack(side="left")
+    info_icon(
+        trigger_row,
+        "A short phrase that becomes the 'name' of your subject in every "
+        "training caption (e.g. 'ohwx person'). At generation time, putting "
+        "the trigger in your prompt summons the LoRA's likeness. Pick "
+        "something rare so it doesn't collide with normal English.",
+    ).pack(side="left")
+    ttk.Entry(trigger_row, textvariable=gui.trigger_var, width=30).pack(side="left", padx=(PAD, 0))
 
-    ttk.Label(f, text="Base SDXL checkpoint:").grid(row=2, column=0, sticky="w", pady=2)
+    base_row = ttk.Frame(f)
+    base_row.grid(row=2, column=0, columnspan=3, sticky="we", pady=2)
+    base_row.columnconfigure(2, weight=1)
+    ttk.Label(base_row, text="Base SDXL checkpoint:").grid(row=0, column=0, sticky="w")
+    info_icon(
+        base_row,
+        "The .safetensors file your LoRA trains on top of. Use a Pony "
+        "checkpoint for stylised/NSFW work, base SDXL 1.0 for photoreal, "
+        "or any community SDXL fine-tune. The same base must be re-used at "
+        "generation time or quality collapses.",
+    ).grid(row=0, column=1, sticky="w")
     base_field = FolderField(
-        f, textvariable=gui.base_model_var,
+        base_row, textvariable=gui.base_model_var,
         browse_title="Choose base SDXL checkpoint",
         file_mode=True,
         filetypes=[("Safetensors", "*.safetensors"), ("All files", "*.*")],
     )
-    base_field.grid(row=2, column=1, columnspan=2, sticky="we", padx=PAD)
+    base_field.grid(row=0, column=2, sticky="we", padx=PAD)
 
     # --- OOM / quality knobs ---
     oom = ttk.LabelFrame(f, text="OOM · quality knobs", padding=PAD)
@@ -63,53 +80,106 @@ def build(gui: "TrainerGUI") -> None:
     oom.columnconfigure(1, weight=0)
     oom.columnconfigure(3, weight=1)
 
-    ttk.Label(oom, text="Resolution:").grid(row=0, column=0, sticky="w", pady=2)
+    res_row = ttk.Frame(oom)
+    res_row.grid(row=0, column=0, columnspan=4, sticky="w", pady=2)
+    ttk.Label(res_row, text="Resolution:").pack(side="left")
+    info_icon(
+        res_row,
+        "Square edge of training images in pixels. SDXL was trained at 1024. "
+        "Drop to 768 if you OOM; 512 only as a last resort (heavy quality "
+        "loss). Changing this invalidates the cache.",
+    ).pack(side="left")
     ttk.Combobox(
-        oom, textvariable=gui.resolution_var,
+        res_row, textvariable=gui.resolution_var,
         values=["512", "768", "1024"], state="readonly", width=8,
-    ).grid(row=0, column=1, sticky="w", padx=PAD)
-
-    ttk.Label(oom, text="LoRA rank:").grid(row=0, column=2, sticky="w", pady=2)
+    ).pack(side="left", padx=PAD)
+    ttk.Label(res_row, text="     LoRA rank:").pack(side="left")
+    info_icon(
+        res_row,
+        "How much capacity the LoRA has. Higher = can capture more detail but "
+        "needs more VRAM and is more prone to overfitting. 32 is the sweet "
+        "spot for likeness LoRAs; drop to 16 if you OOM, raise to 64 only on "
+        "big cards. Cannot be changed during --resume.",
+    ).pack(side="left")
     ttk.Combobox(
-        oom, textvariable=gui.lora_rank_var,
+        res_row, textvariable=gui.lora_rank_var,
         values=["8", "16", "32", "64"], state="readonly", width=6,
-    ).grid(row=0, column=3, sticky="w", padx=PAD)
+    ).pack(side="left", padx=PAD)
 
-    ttk.Label(oom, text="Grad accumulation:").grid(row=1, column=0, sticky="w", pady=2)
+    grad_row = ttk.Frame(oom)
+    grad_row.grid(row=1, column=0, columnspan=4, sticky="w", pady=2)
+    ttk.Label(grad_row, text="Grad accumulation:").pack(side="left")
+    info_icon(
+        grad_row,
+        "Effective batch size when train_batch_size is fixed at 1. "
+        "Accumulates gradients across N forward passes before stepping the "
+        "optimizer — same end result as a bigger batch but no extra VRAM. "
+        "Tradeoff: each 'step' takes N× longer wall time. Leave at 1 unless "
+        "training feels noisy.",
+    ).pack(side="left")
     ttk.Combobox(
-        oom, textvariable=gui.grad_accum_var,
+        grad_row, textvariable=gui.grad_accum_var,
         values=["1", "2", "4", "8"], state="readonly", width=6,
-    ).grid(row=1, column=1, sticky="w", padx=PAD)
+    ).pack(side="left", padx=PAD)
 
-    ttk.Checkbutton(oom, text="xformers", variable=gui.xformers_var).grid(
-        row=1, column=2, sticky="w", padx=PAD
-    )
+    ttk.Checkbutton(grad_row, text="xformers", variable=gui.xformers_var).pack(side="left", padx=PAD)
+    info_icon(
+        grad_row,
+        "Memory-efficient attention via the xformers library. Saves ~1 GB "
+        "of VRAM during training with no quality loss. If xformers isn't "
+        "installed the loop falls back to PyTorch SDPA automatically.",
+    ).pack(side="left")
     ttk.Checkbutton(
-        oom, text="Text-encoder LoRA (higher quality, slower)",
+        grad_row, text="Text-encoder LoRA (higher quality, slower)",
         variable=gui.te_lora_var,
-    ).grid(row=1, column=3, sticky="w", padx=PAD)
+    ).pack(side="left", padx=PAD)
+    info_icon(
+        grad_row,
+        "Also trains LoRA adapters on top of the two CLIP text encoders. "
+        "Improves prompt-following and likeness for text-heavy descriptions. "
+        "BUT: needs ~12 GB of VRAM because both encoders stay resident on "
+        "GPU during training. The GUI will refuse to start a run with this "
+        "on if your card has less.",
+    ).pack(side="left")
 
     # --- schedule ---
     sched = ttk.LabelFrame(f, text="Training length", padding=PAD)
     sched.grid(row=4, column=0, columnspan=3, sticky="we", pady=(0, PAD))
 
-    ttk.Label(sched, text="Max steps:").grid(row=0, column=0, sticky="w", pady=2)
-    ttk.Entry(sched, textvariable=gui.max_steps_var, width=10).grid(
-        row=0, column=1, sticky="w", padx=PAD
-    )
-    ttk.Label(sched, text="Checkpoint every:").grid(row=0, column=2, sticky="w", pady=2)
-    ttk.Entry(sched, textvariable=gui.checkpointing_steps_var, width=10).grid(
-        row=0, column=3, sticky="w", padx=PAD
-    )
-    ttk.Label(sched, text="Validation every (0 = off):").grid(
-        row=1, column=0, sticky="w", pady=2
-    )
-    ttk.Entry(sched, textvariable=gui.validation_steps_var, width=10).grid(
-        row=1, column=1, sticky="w", padx=PAD
-    )
+    ms_row = ttk.Frame(sched)
+    ms_row.grid(row=0, column=0, columnspan=4, sticky="w", pady=2)
+    ttk.Label(ms_row, text="Max steps:").pack(side="left")
+    info_icon(
+        ms_row,
+        "Total optimizer steps for this run. 1500 is a reasonable likeness-LoRA "
+        "starting point; 2500-3000 if you have lots of varied images. More is "
+        "not always better — past a point the LoRA memorises individual frames "
+        "and stops generalising.",
+    ).pack(side="left")
+    ttk.Entry(ms_row, textvariable=gui.max_steps_var, width=10).pack(side="left", padx=PAD)
+    ttk.Label(ms_row, text="     Checkpoint every:").pack(side="left")
+    info_icon(
+        ms_row,
+        "Save a resumable training checkpoint every N steps. Higher = less "
+        "disk used, lower = finer-grained recovery if you crash mid-run. "
+        "100 is a good default; the saved snapshots live in checkpoints/.",
+    ).pack(side="left")
+    ttk.Entry(ms_row, textvariable=gui.checkpointing_steps_var, width=10).pack(side="left", padx=PAD)
+
+    val_row = ttk.Frame(sched)
+    val_row.grid(row=1, column=0, columnspan=4, sticky="w", pady=2)
+    ttk.Label(val_row, text="Validation every (0 = off):").pack(side="left")
+    info_icon(
+        val_row,
+        "Every N steps, the loop generates one preview image with your trigger "
+        "word so you can eyeball training progress. Output goes to "
+        "logs/validation/. Costs extra VRAM during the inference, so leave "
+        "this at 0 if you're tight on memory; 200 is a nice cadence otherwise.",
+    ).pack(side="left")
+    ttk.Entry(val_row, textvariable=gui.validation_steps_var, width=10).pack(side="left", padx=PAD)
 
     ttk.Button(
-        f, text="SAVE SETTINGS", style="Primary.TButton",
+        f, text="Save settings", style="Primary.TButton",
         command=lambda: _on_save(gui),
     ).grid(row=5, column=1, sticky="w", padx=PAD, pady=PAD)
 

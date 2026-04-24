@@ -139,6 +139,9 @@ def caption_dataset_wd14(
     trigger_word: str,
     model_id: str,
     progress_cb: Optional[ProgressCb] = None,
+    general_threshold: float = DEFAULT_GENERAL_THRESHOLD,
+    character_threshold: float = DEFAULT_CHARACTER_THRESHOLD,
+    extra_suffix: str = "",
 ) -> list[Path]:
     """Write ``<stem>.txt`` files with WD14 tag lists prefixed by the trigger.
 
@@ -153,11 +156,17 @@ def caption_dataset_wd14(
     written: list[Path] = []
 
     for i, png in enumerate(images):
-        tag_strs = tag_image(png, session, tags)
+        tag_strs = tag_image(
+            png, session, tags,
+            general_threshold=general_threshold,
+            character_threshold=character_threshold,
+        )
+        parts = [trigger_word]
         if tag_strs:
-            caption = f"{trigger_word}, " + ", ".join(tag_strs)
-        else:
-            caption = trigger_word
+            parts.extend(tag_strs)
+        if extra_suffix:
+            parts.append(extra_suffix)
+        caption = ", ".join(parts)
         out = png.with_suffix(".txt")
         out.write_text(caption, encoding="utf-8")
         written.append(out)
@@ -176,6 +185,9 @@ def caption_dataset_both(
     blip_model_id: str,
     wd14_model_id: str,
     progress_cb: Optional[ProgressCb] = None,
+    general_threshold: float = DEFAULT_GENERAL_THRESHOLD,
+    character_threshold: float = DEFAULT_CHARACTER_THRESHOLD,
+    extra_suffix: str = "",
 ) -> list[Path]:
     """Run BLIP + WD14 on each image and concatenate both outputs.
 
@@ -220,12 +232,18 @@ def caption_dataset_both(
                 del inputs, out
 
                 # WD14
-                wd14_tags = tag_image(png, session, tags)
+                wd14_tags = tag_image(
+                    png, session, tags,
+                    general_threshold=general_threshold,
+                    character_threshold=character_threshold,
+                )
 
                 parts = [trigger_word]
                 if blip_caption:
                     parts.append(blip_caption)
                 parts.extend(wd14_tags)
+                if extra_suffix:
+                    parts.append(extra_suffix)
                 caption = ", ".join(parts)
 
                 outp = png.with_suffix(".txt")

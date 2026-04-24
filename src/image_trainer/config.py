@@ -52,6 +52,23 @@ class Project:
     #: WD14 model used when ``captioner`` is ``"wd14"`` or ``"both"``. Must be
     #: a SmilingWolf ONNX-format WD14 repo on Hugging Face.
     wd14_model_id: str = "SmilingWolf/wd-v1-4-moat-tagger-v2"
+    #: WD14 confidence cutoffs. Lower the general threshold to surface more
+    #: descriptive tags (better for explicit content; some risk of noise).
+    #: Character threshold is intentionally high — character tags rarely make
+    #: sense for a personal-likeness LoRA.
+    caption_general_threshold: float = 0.35
+    caption_character_threshold: float = 0.85
+    #: Free-text suffix appended to every caption written this run. Useful for
+    #: stylistic anchors ("photorealistic, soft lighting") or NSFW hints
+    #: ("explicit, nsfw"). Comma-separated; gets joined onto the BLIP / WD14
+    #: output with a leading comma.
+    caption_extra_suffix: str = ""
+    #: Convenience preset that flips a few defaults for adult datasets:
+    #: lowers the general threshold to 0.25, prepends explicit anatomy hints
+    #: to ``caption_extra_suffix`` if blank. The actual lowering is applied
+    #: at caption-time by the CLI handler so the user can still tweak the
+    #: thresholds afterwards.
+    caption_nsfw_preset: bool = False
 
     # training - what to train on
     base_model_path: Optional[Path] = None

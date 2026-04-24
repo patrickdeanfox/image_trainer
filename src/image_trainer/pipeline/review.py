@@ -29,6 +29,12 @@ class ReviewEntry:
     include: bool = True
     caption: str = ""
     notes: str = ""
+    # Tri-state face-detection bit written by ``prep``:
+    #   True  → MTCNN found a face and the image was face-crop'd.
+    #   False → MTCNN ran but found no face; image is centre-cropped.
+    #   None  → unknown (older review.json, or prep didn't use face detection).
+    # Used by the Review tab's "faces / no-face" filter.
+    face_detected: Optional[bool] = None
 
 
 @dataclass
@@ -43,6 +49,12 @@ class Review:
 
     def excluded_count(self) -> int:
         return sum(1 for e in self.entries.values() if not e.include)
+
+    def face_count(self) -> int:
+        return sum(1 for e in self.entries.values() if e.face_detected is True)
+
+    def non_face_count(self) -> int:
+        return sum(1 for e in self.entries.values() if e.face_detected is False)
 
 
 def _review_path(project: Project) -> Path:
@@ -65,11 +77,18 @@ def load(project: Project) -> Review:
         try:
             blob = json.loads(path.read_text())
             for stem, raw in blob.items():
+                face_raw = raw.get("face_detected", None)
+                face_val: Optional[bool]
+                if face_raw is None:
+                    face_val = None
+                else:
+                    face_val = bool(face_raw)
                 review.entries[stem] = ReviewEntry(
                     stem=stem,
                     include=bool(raw.get("include", True)),
                     caption=str(raw.get("caption", "")),
                     notes=str(raw.get("notes", "")),
+                    face_detected=face_val,
                 )
         except Exception as e:
             # Corrupt or hand-edited -> warn and rebuild from disk so the user
@@ -86,6 +105,31 @@ def load(project: Project) -> Review:
     orphaned = [s for s in review.entries if s not in png_stems]
     for s in orphaned:
         del review.entries[s]
+
+    # Backfill ``face_detected`` for legacy review.json written before this
+    # field existed.
+    #
+    # Step 1: anything with a "no face detected" note is reliably negative.
+    # Step 2: if the project ran in face-aware mode, every other entry was
+    #   either successfully face-cropped at prep time OR the detector was
+    #   unavailable. We can't distinguish those without re-running detection,
+    #   but the common case by far is "user is on face-aware mode and ran
+    #   prep with the dependency installed" — under that assumption every
+    #   non-negative entry is face-positive.
+    #
+    # The negative inference is more conservative (it only fires when the
+    # project explicitly opted into face-aware crop), so users on centre-crop
+    # mode don't accidentally get all entries flipped to "face=True". On a
+    # fresh prep this whole block is a no-op because ``_cmd_prep`` writes
+    # ``face_detected`` directly.
+    project_is_face_aware = bool(getattr(project, "face_aware_crop", False))
+    for entry in review.entries.values():
+        if entry.face_detected is not None:
+            continue
+        if "no face detected" in (entry.notes or ""):
+            entry.face_detected = False
+        elif project_is_face_aware:
+            entry.face_detected = True
 
     # Seed any missing entries from the processed folder.
     for png in sorted(project.processed_dir.glob("*.png")):

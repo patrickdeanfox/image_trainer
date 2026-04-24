@@ -46,10 +46,14 @@ class ResizeResult(NamedTuple):
     the old ``list[Path]`` return). ``face_failed_stems`` holds the stems of
     images that were written but where face detection failed — the caller
     (:mod:`cli`) uses this to mark those images as excluded in review.json.
+    ``face_success_stems`` holds stems where a face was found and the image
+    was face-crop'd; the caller mirrors this into review.json so the Review
+    tab can offer a "faces / no-face" filter.
     """
 
     paths: list[Path]
     face_failed_stems: list[str]
+    face_success_stems: list[str]
 
 
 def _iter_source_images(src: Path) -> Iterable[Path]:
@@ -199,6 +203,7 @@ def resize_dataset(
     total = len(sources)
     written: list[Path] = []
     face_failed_stems: list[str] = []
+    face_success_stems: list[str] = []
 
     detector_available = False
     if face_aware:
@@ -249,6 +254,8 @@ def resize_dataset(
             # not a per-image failure.
             if face_aware and detector_available and face is None:
                 face_failed_stems.append(out.stem)
+            elif face_aware and detector_available and face is not None:
+                face_success_stems.append(out.stem)
 
             print(
                 f"Processed: {img_path.name} -> {out.name} [{crop_strategy}-crop]",
@@ -268,4 +275,8 @@ def resize_dataset(
             flush=True,
         )
     print(f"Done! {len(written)} images ready in {dst}", flush=True)
-    return ResizeResult(paths=written, face_failed_stems=face_failed_stems)
+    return ResizeResult(
+        paths=written,
+        face_failed_stems=face_failed_stems,
+        face_success_stems=face_success_stems,
+    )

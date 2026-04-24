@@ -36,7 +36,9 @@ from .tabs import (
     prep_tab,
     review_tab,
     settings_tab,
+    storage_tab,
     train_tab,
+    video_tab,
 )
 
 
@@ -48,6 +50,8 @@ STEP_LABELS = [
     ("train", "Train"),
     ("generate", "Generate"),
 ]
+# NOTE: 07 · Storage is a real tab but not part of the linear pipeline,
+# so it deliberately doesn't appear in STEP_LABELS / status dots.
 
 
 class TrainerGUI:
@@ -72,6 +76,7 @@ class TrainerGUI:
         # Tab-state objects (populated by the tab builders).
         self.review_state = None
         self.train_state = None
+        self.storage_state = None
 
         # Populated as tabs build their widgets.
         self.trigger_var: tk.StringVar
@@ -119,14 +124,18 @@ class TrainerGUI:
         self.tab_review = ttk.Frame(self.nb, padding=PAD)
         self.tab_train = ttk.Frame(self.nb, padding=PAD)
         self.tab_generate = ttk.Frame(self.nb, padding=PAD)
+        self.tab_storage = ttk.Frame(self.nb, padding=PAD)
+        self.tab_video = ttk.Frame(self.nb, padding=PAD)
 
         # Initial labels; refresh_step_status() adds live counts.
-        self.nb.add(self.tab_settings, text="01 · SETTINGS")
-        self.nb.add(self.tab_prep, text="02 · INGEST")
-        self.nb.add(self.tab_caption, text="03 · CAPTION")
-        self.nb.add(self.tab_review, text="04 · REVIEW")
-        self.nb.add(self.tab_train, text="05 · TRAIN")
-        self.nb.add(self.tab_generate, text="06 · GENERATE")
+        self.nb.add(self.tab_settings, text="01 · Settings")
+        self.nb.add(self.tab_prep, text="02 · Ingest")
+        self.nb.add(self.tab_caption, text="03 · Caption")
+        self.nb.add(self.tab_review, text="04 · Review")
+        self.nb.add(self.tab_train, text="05 · Train")
+        self.nb.add(self.tab_generate, text="06 · Generate")
+        self.nb.add(self.tab_storage, text="07 · Storage")
+        self.nb.add(self.tab_video, text="08 · Video")
 
         settings_tab.build(self)
         prep_tab.build(self)
@@ -134,12 +143,14 @@ class TrainerGUI:
         review_tab.build(self)
         train_tab.build(self)
         generate_tab.build(self)
+        storage_tab.build(self)
+        video_tab.build(self)
 
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self._build_log_pane()
 
-        self.status_var = tk.StringVar(value="READY")
+        self.status_var = tk.StringVar(value="ready")
         status = ttk.Label(self.root, textvariable=self.status_var,
                            style="Status.TLabel", anchor="w")
         status.pack(fill="x", padx=PAD, pady=(4, PAD))
@@ -156,10 +167,10 @@ class TrainerGUI:
         left = ttk.Frame(bar, style="Panel.TFrame")
         left.pack(side="left", padx=(PAD, PAD * 2), pady=PAD // 2)
 
-        ttk.Label(left, text="IMAGE TRAINER", style="Title.TLabel").pack(
+        ttk.Label(left, text="Image Trainer", style="Title.TLabel").pack(
             side="left", padx=(0, PAD)
         )
-        ttk.Label(left, text="· SDXL LoRA console", style="SubHeader.TLabel").pack(
+        ttk.Label(left, text="· a darkroom for SDXL portraits", style="SubHeader.TLabel").pack(
             side="left"
         )
 
@@ -173,25 +184,25 @@ class TrainerGUI:
             "<<ComboboxSelected>>", lambda _e: self._on_project_selected()
         )
 
-        ttk.Button(mid, text="NEW…", style="Ghost.TButton",
+        ttk.Button(mid, text="New…", style="Ghost.TButton",
                    command=self._new_project).pack(side="left", padx=(PAD // 2, 0))
-        ttk.Button(mid, text="REFRESH", style="Ghost.TButton",
+        ttk.Button(mid, text="Refresh", style="Ghost.TButton",
                    command=self._refresh_project_list).pack(side="left", padx=(PAD // 2, 0))
 
         # Recent projects menubutton
-        self.recent_mb = ttk.Menubutton(mid, text="RECENT ▾", style="Ghost.TButton")
+        self.recent_mb = ttk.Menubutton(mid, text="Recent ▾", style="Ghost.TButton")
         self.recent_menu = tk.Menu(self.recent_mb, tearoff=0)
         self.recent_mb.configure(menu=self.recent_menu)
         self.recent_mb.pack(side="left", padx=(PAD // 2, 0))
         self._rebuild_recent_menu()
 
-        ttk.Button(mid, text="ROOT…", style="Ghost.TButton",
+        ttk.Button(mid, text="Root…", style="Ghost.TButton",
                    command=self._change_projects_root).pack(side="left", padx=(PAD // 2, 0))
 
         # Right: status dots — one per wizard step.
         right = ttk.Frame(bar, style="Panel.TFrame")
         right.pack(side="right", padx=PAD, pady=PAD // 2)
-        ttk.Label(right, text="STATUS", style="SubHeader.TLabel",
+        ttk.Label(right, text="status", style="SubHeader.TLabel",
                   background=t.BG_PANEL).pack(side="left", padx=(0, PAD // 2))
         self.step_dots: dict[str, StatusDot] = {}
         for key, _label in STEP_LABELS:
@@ -208,7 +219,7 @@ class TrainerGUI:
         t = self.theme
         PAD = gui_theme.PAD
 
-        self.log_pane = CollapsibleFrame(self.root, text="TELEMETRY", start_open=True)
+        self.log_pane = CollapsibleFrame(self.root, text="Telemetry", start_open=True)
         self.log_pane.pack(fill="both", expand=False, padx=PAD, pady=(PAD, 0))
 
         self.log = scrolledtext.ScrolledText(
@@ -395,6 +406,15 @@ class TrainerGUI:
         self.xformers_var.set(project.use_xformers)
         self.te_lora_var.set(project.train_text_encoder)
         self.face_aware_var.set(project.face_aware_crop)
+        # Caption tab settings — persisted on Project so they survive across
+        # GUI restarts. Guarded with hasattr because the caption tab might
+        # not have built its widgets yet during an early-init load.
+        if hasattr(self, "captioner_var"):
+            self.captioner_var.set(project.captioner)
+            self.general_threshold_var.set(str(project.caption_general_threshold))
+            self.character_threshold_var.set(str(project.caption_character_threshold))
+            self.caption_suffix_var.set(project.caption_extra_suffix)
+            self.caption_nsfw_var.set(project.caption_nsfw_preset)
         if not self.negative_var.get().strip():
             self.negative_var.set(project.default_negative_prompt)
         # Force Review tab to rebuild for this project next time it's shown.
@@ -419,25 +439,25 @@ class TrainerGUI:
         n_processed = len(processed)
         if n_processed == 0:
             self.step_dots["prep"].set_state("pending")
-            self._set_tab_text(1, "02 · INGEST")
+            self._set_tab_text(1, "02 · Ingest")
         else:
             self.step_dots["prep"].set_state("done")
-            self._set_tab_text(1, f"02 · INGEST · {n_processed} imgs")
+            self._set_tab_text(1, f"02 · Ingest · {n_processed} imgs")
 
         # CAPTION — based on .txt file count vs PNGs.
         n_captions = sum(1 for p in processed if p.with_suffix(".txt").exists())
         if n_processed == 0:
             self.step_dots["caption"].set_state("pending")
-            self._set_tab_text(2, "03 · CAPTION")
+            self._set_tab_text(2, "03 · Caption")
         elif n_captions == 0:
             self.step_dots["caption"].set_state("pending")
-            self._set_tab_text(2, "03 · CAPTION")
+            self._set_tab_text(2, "03 · Caption")
         elif n_captions < n_processed:
             self.step_dots["caption"].set_state("warn")
-            self._set_tab_text(2, f"03 · CAPTION · {n_captions}/{n_processed}")
+            self._set_tab_text(2, f"03 · Caption · {n_captions}/{n_processed}")
         else:
             self.step_dots["caption"].set_state("done")
-            self._set_tab_text(2, f"03 · CAPTION · {n_captions}/{n_processed}")
+            self._set_tab_text(2, f"03 · Caption · {n_captions}/{n_processed}")
 
         # REVIEW — from review.json summary.
         review_path = project.root / "review.json"
@@ -448,29 +468,29 @@ class TrainerGUI:
                 total, inc = s["total"], s["included"]
                 if total == 0:
                     self.step_dots["review"].set_state("pending")
-                    self._set_tab_text(3, "04 · REVIEW")
+                    self._set_tab_text(3, "04 · Review")
                 else:
                     self.step_dots["review"].set_state("done" if inc > 0 else "warn")
-                    self._set_tab_text(3, f"04 · REVIEW · {inc}/{total}")
+                    self._set_tab_text(3, f"04 · Review · {inc}/{total}")
             except Exception:
                 self.step_dots["review"].set_state("warn")
-                self._set_tab_text(3, "04 · REVIEW · ?")
+                self._set_tab_text(3, "04 · Review · ?")
         else:
             self.step_dots["review"].set_state("pending")
-            self._set_tab_text(3, "04 · REVIEW")
+            self._set_tab_text(3, "04 · Review")
 
         # TRAIN — based on checkpoints/ or lora/ presence.
         ckpts = list(project.checkpoints_dir.glob("step_*")) if project.checkpoints_dir.exists() else []
         lora_unet = project.lora_dir / "unet" if project.lora_dir.exists() else None
         if lora_unet and lora_unet.exists():
             self.step_dots["train"].set_state("done")
-            self._set_tab_text(4, "05 · TRAIN · done")
+            self._set_tab_text(4, "05 · Train · done")
         elif ckpts:
             self.step_dots["train"].set_state("warn")
-            self._set_tab_text(4, f"05 · TRAIN · ckpt({len(ckpts)})")
+            self._set_tab_text(4, f"05 · Train · ckpt({len(ckpts)})")
         else:
             self.step_dots["train"].set_state("pending")
-            self._set_tab_text(4, "05 · TRAIN")
+            self._set_tab_text(4, "05 · Train")
 
         # GENERATE — outputs/ presence.
         outs = []
@@ -478,10 +498,10 @@ class TrainerGUI:
             outs = [p for p in project.outputs_dir.iterdir() if p.is_dir()]
         if outs:
             self.step_dots["generate"].set_state("done")
-            self._set_tab_text(5, f"06 · GENERATE · {len(outs)} runs")
+            self._set_tab_text(5, f"06 · Generate · {len(outs)} runs")
         else:
             self.step_dots["generate"].set_state("pending")
-            self._set_tab_text(5, "06 · GENERATE")
+            self._set_tab_text(5, "06 · Generate")
 
     def _set_tab_text(self, index: int, text: str) -> None:
         try:
@@ -499,6 +519,9 @@ class TrainerGUI:
         else:
             if self.review_state is not None:
                 self.review_state.on_tab_leave()
+        if selected == str(self.tab_storage):
+            if self.storage_state is not None and self.current_project is not None:
+                self.storage_state.on_tab_enter()
         self.refresh_step_status()
 
     # ---- log pump ----
@@ -552,6 +575,7 @@ class TrainerGUI:
 
 _TAB_INDEX = {
     "settings": 0, "prep": 1, "caption": 2, "review": 3, "train": 4, "generate": 5,
+    "storage": 6, "video": 7,
 }
 
 

@@ -51,15 +51,15 @@ def build(gui: "TrainerGUI") -> None:
     btns = ttk.Frame(f)
     btns.grid(row=3, column=0, columnspan=3, sticky="w", pady=PAD)
     ttk.Button(
-        btns, text="IMPORT & RESIZE", style="Primary.TButton",
+        btns, text="Import & resize", style="Primary.TButton",
         command=lambda: _on_prep(gui, dry_run=False),
     ).pack(side="left")
     ttk.Button(
-        btns, text="DRY-RUN PREVIEW",
+        btns, text="Dry-run preview",
         command=lambda: _on_prep(gui, dry_run=True),
     ).pack(side="left", padx=(PAD, 0))
     ttk.Button(
-        btns, text="OPEN PROCESSED",
+        btns, text="Open processed",
         style="Ghost.TButton",
         command=lambda: _open_processed(gui),
     ).pack(side="left", padx=(PAD, 0))

@@ -242,6 +242,117 @@ def parse_step_line(line: str) -> Optional[dict]:
     return None
 
 
+# ---------- user settings (per-user, not per-project) ----------
+
+#: Per-user settings file. Lives in the projects root so it travels with
+#: the projects collection but isn't tied to any single project. Used for
+#: things that span projects: Wan2GP install path, light/dark preference
+#: (future), etc.
+_USER_SETTINGS_FILENAME = ".user_settings.json"
+
+
+def _user_settings_path(projects_root: Path) -> Path:
+    return projects_root / _USER_SETTINGS_FILENAME
+
+
+def load_user_settings(projects_root: Path) -> dict:
+    """Return the per-user settings dict, or empty dict if missing/corrupt."""
+    p = _user_settings_path(projects_root)
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_user_settings(projects_root: Path, data: dict) -> None:
+    """Persist per-user settings, swallowing OS errors (best-effort)."""
+    projects_root.mkdir(parents=True, exist_ok=True)
+    try:
+        _user_settings_path(projects_root).write_text(json.dumps(data, indent=2))
+    except OSError:
+        pass
+
+
+def update_user_setting(projects_root: Path, key: str, value) -> dict:
+    """Read-modify-write helper — merges {key: value} and returns the new dict."""
+    data = load_user_settings(projects_root)
+    data[key] = value
+    save_user_settings(projects_root, data)
+    return data
+
+
+# ---------- tool discovery ----------
+
+def which(name: str) -> Optional[str]:
+    """Cross-platform shutil.which wrapper that always returns Optional[str]."""
+    import shutil as _sh
+    return _sh.which(name)
+
+
+# ---------- shared LoRA library ----------
+
+#: Folder under the projects root where community / civitai LoRAs live.
+#: The Generate tab discovers .safetensors files here and offers to stack
+#: them on top of the trained LoRA. Lives outside any project so a single
+#: download is reusable across all of your projects.
+SHARED_LORAS_DIRNAME = "shared_loras"
+
+
+def shared_loras_dir(projects_root: Path) -> Path:
+    """Path to the shared LoRA library; created on first use."""
+    p = projects_root / SHARED_LORAS_DIRNAME
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def list_shared_loras(projects_root: Path) -> list[Path]:
+    """Every .safetensors file directly under the shared LoRA folder.
+
+    Sorted by mtime (newest first) so freshly-imported LoRAs surface at the
+    top of the Generate tab list.
+    """
+    d = shared_loras_dir(projects_root)
+    files = [p for p in d.iterdir() if p.is_file() and p.suffix == ".safetensors"]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return files
+
+
+# ---------- folder inventory ----------
+
+def folder_size_and_count(path: Path) -> tuple[int, int]:
+    """Return (total_bytes, file_count) for ``path``.
+
+    Walks the tree without following symlinks so we never count outside the
+    project root. Missing directories return (0, 0) — Storage tab calls this
+    even for folders that may not exist yet.
+    """
+    total_bytes = 0
+    total_files = 0
+    if not path.exists():
+        return (0, 0)
+    for dirpath, _dirnames, filenames in os.walk(path, followlinks=False):
+        for name in filenames:
+            try:
+                total_bytes += os.lstat(os.path.join(dirpath, name)).st_size
+                total_files += 1
+            except OSError:
+                pass
+    return (total_bytes, total_files)
+
+
+def format_bytes(n: int) -> str:
+    """Human-friendly size — '1.4 GB' / '320 MB' / '4.2 KB' / '0 B'."""
+    if n <= 0:
+        return "0 B"
+    for unit, divisor in (("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+        if n >= divisor:
+            return f"{n / divisor:.1f} {unit}"
+    return f"{n} B"
+
+
 # ---------- nvidia-smi probe ----------
 
 def probe_vram() -> Optional[tuple[int, int]]:
@@ -265,3 +376,123 @@ def probe_vram() -> Optional[tuple[int, int]]:
         return int(used_s.strip()), int(total_s.strip())
     except Exception:
         return None
+
+
+# ---------- GPU process listing + kill ----------
+
+class GpuProc:
+    """One row of ``nvidia-smi --query-compute-apps``.
+
+    Plain class (not a dataclass) to keep this file dependency-free at module
+    load time — gui_helpers imports must stay cheap because every tab pulls it
+    in eagerly.
+    """
+
+    __slots__ = ("pid", "name", "used_mib")
+
+    def __init__(self, pid: int, name: str, used_mib: int) -> None:
+        self.pid = pid
+        self.name = name
+        self.used_mib = used_mib
+
+    def __repr__(self) -> str:  # pragma: no cover — debug aid only
+        return f"GpuProc(pid={self.pid}, name={self.name!r}, mib={self.used_mib})"
+
+
+def list_gpu_processes() -> list[GpuProc]:
+    """Return every process currently holding GPU memory, per ``nvidia-smi``.
+
+    Empty list if nvidia-smi isn't installed, returns no rows, or errors out
+    — callers should treat that as "nothing to free" rather than a hard
+    failure (the user might be on a CPU-only machine debugging the GUI).
+    """
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=pid,process_name,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            stderr=subprocess.DEVNULL,
+            timeout=2.0,
+            text=True,
+        )
+    except Exception:
+        return []
+    rows: list[GpuProc] = []
+    for line in out.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            name = parts[1]
+            used = int(parts[2])
+        except ValueError:
+            continue
+        rows.append(GpuProc(pid=pid, name=name, used_mib=used))
+    return rows
+
+
+def kill_processes(pids: Iterable[int], *, escalate_after_s: float = 2.0) -> dict[int, str]:
+    """SIGTERM each pid; if it's still alive after ``escalate_after_s``, SIGKILL.
+
+    Returns ``{pid: status}`` where status is one of:
+    ``"terminated"`` (died on SIGTERM),
+    ``"killed"`` (needed SIGKILL),
+    ``"gone"`` (already dead before we tried),
+    ``"perm-denied"`` (we don't own the process — usually means root/system),
+    ``"failed: <message>"`` (anything else).
+
+    Designed for the "Free VRAM" button — non-blocking from the user's POV
+    is achieved by the caller dispatching this to a thread; the function
+    itself is synchronous so behaviour is predictable.
+    """
+    import os
+    import signal
+    import time
+
+    out: dict[int, str] = {}
+    pids = [int(p) for p in pids]
+
+    # Phase 1: graceful term.
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            out[pid] = "gone"
+        except PermissionError:
+            out[pid] = "perm-denied"
+        except Exception as e:  # pragma: no cover — defensive
+            out[pid] = f"failed: {e}"
+
+    if escalate_after_s > 0:
+        time.sleep(escalate_after_s)
+
+    # Phase 2: confirm + escalate.
+    for pid in pids:
+        if pid in out and out[pid] not in (None,):  # noqa: E711 — explicit
+            # Already classified (gone / perm-denied / failed). Skip.
+            if out[pid] != "perm-denied" and out[pid] != "gone":
+                pass
+        try:
+            os.kill(pid, 0)  # alive?
+        except ProcessLookupError:
+            out.setdefault(pid, "terminated")
+            if out.get(pid) not in ("perm-denied", "gone"):
+                out[pid] = "terminated"
+            continue
+        except PermissionError:
+            out[pid] = "perm-denied"
+            continue
+        # Still alive — escalate.
+        try:
+            os.kill(pid, signal.SIGKILL)
+            out[pid] = "killed"
+        except ProcessLookupError:
+            out[pid] = "terminated"
+        except PermissionError:
+            out[pid] = "perm-denied"
+        except Exception as e:  # pragma: no cover — defensive
+            out[pid] = f"failed: {e}"
+    return out

@@ -29,6 +29,7 @@ def caption_dataset(
     trigger_word: str,
     model_id: str = "Salesforce/blip-image-captioning-large",
     progress_cb: Optional[ProgressCb] = None,
+    extra_suffix: str = "",
 ) -> list[Path]:
     """Generate a caption for every PNG in `images_dir` and write sibling ``.txt`` files.
 
@@ -77,7 +78,10 @@ def caption_dataset(
         out = model.generate(**inputs, max_new_tokens=75)
         caption = processor.decode(out[0], skip_special_tokens=True)
 
-        full_caption = f"{trigger_word}, {caption}"
+        if extra_suffix:
+            full_caption = f"{trigger_word}, {caption}, {extra_suffix}"
+        else:
+            full_caption = f"{trigger_word}, {caption}"
         caption_file = img_path.with_suffix(".txt")
         caption_file.write_text(full_caption)
         written.append(caption_file)

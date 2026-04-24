@@ -10,6 +10,9 @@ Contents:
 - :class:`FolderField` — Entry + Browse + Open composite for path inputs.
 - :class:`CollapsibleFrame` — header row with a caret that toggles the body.
 - :class:`ThumbnailGrid` — scrollable grid of PIL images (Review tab).
+- :class:`Tooltip` — hover popup with a one-sentence explanation.
+- :func:`info_icon` — convenience builder that drops a ⓘ glyph + tooltip
+  next to a label so technical fields can self-explain.
 """
 
 from __future__ import annotations
@@ -183,9 +186,9 @@ class FolderField(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self._entry = ttk.Entry(self, textvariable=textvariable)
         self._entry.grid(row=0, column=0, sticky="we")
-        ttk.Button(self, text="BROWSE…", style="Ghost.TButton",
+        ttk.Button(self, text="Browse…", style="Ghost.TButton",
                    command=self._browse).grid(row=0, column=1, padx=(gui_theme.PAD // 2, 0))
-        ttk.Button(self, text="OPEN", style="Ghost.TButton",
+        ttk.Button(self, text="Open", style="Ghost.TButton",
                    command=self._open).grid(row=0, column=2, padx=(gui_theme.PAD // 2, 0))
 
     def _browse(self) -> None:
@@ -380,3 +383,118 @@ class ThumbnailGrid(ttk.Frame):
             cap_label.pack()
             count += 1
         return count
+
+
+# ---------- Tooltip + info icon ----------
+
+class Tooltip:
+    """A delayed-hover tooltip that pops a small parchment label near the
+    cursor. Use via :meth:`bind` (any widget) or :func:`info_icon` (which
+    bakes the glyph + tooltip into a tiny clickable label).
+
+    Honors the active :data:`gui_theme.THEME` so it reads as part of the
+    interface, not as a generic OS tooltip.
+    """
+
+    DELAY_MS = 600          # hover dwell before showing
+    OFFSET = (12, 16)       # cursor → tooltip nudge in pixels
+    MAX_WIDTH = 320
+
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self.widget = widget
+        self.text = text
+        self._after_id: Optional[str] = None
+        self._tip: Optional[tk.Toplevel] = None
+        widget.bind("<Enter>", self._on_enter, add="+")
+        widget.bind("<Leave>", self._on_leave, add="+")
+        widget.bind("<Motion>", self._on_motion, add="+")
+        widget.bind("<ButtonPress>", self._on_leave, add="+")
+
+    @classmethod
+    def bind(cls, widget: tk.Widget, text: str) -> "Tooltip":
+        """Convenience constructor — same as ``Tooltip(widget, text)`` but
+        reads more naturally at call sites: ``Tooltip.bind(entry, "...")``."""
+        return cls(widget, text)
+
+    def _on_enter(self, _e=None) -> None:
+        self._cancel()
+        self._after_id = self.widget.after(self.DELAY_MS, self._show)
+
+    def _on_motion(self, _e=None) -> None:
+        if self._tip is None:
+            self._cancel()
+            self._after_id = self.widget.after(self.DELAY_MS, self._show)
+
+    def _on_leave(self, _e=None) -> None:
+        self._cancel()
+        self._hide()
+
+    def _cancel(self) -> None:
+        if self._after_id:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self) -> None:
+        if self._tip is not None:
+            return
+        t = gui_theme.THEME
+        x = self.widget.winfo_pointerx() + self.OFFSET[0]
+        y = self.widget.winfo_pointery() + self.OFFSET[1]
+        tip = tk.Toplevel(self.widget)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f"+{x}+{y}")
+        # A two-layer frame fakes a 1px outline since ttk.Frame can't easily
+        # carry a coloured border on Tk's clam theme.
+        outer = tk.Frame(tip, background=t.ACCENT_AMBER, padx=1, pady=1)
+        outer.pack()
+        inner = tk.Frame(outer, background=t.BG_ELEVATED, padx=10, pady=8)
+        inner.pack()
+        lbl = tk.Label(
+            inner,
+            text=self.text,
+            background=t.BG_ELEVATED,
+            foreground=t.TEXT_PRIMARY,
+            font=t.FONT_BODY,
+            wraplength=self.MAX_WIDTH,
+            justify="left",
+        )
+        lbl.pack()
+        self._tip = tip
+
+    def _hide(self) -> None:
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
+
+
+def info_icon(parent: tk.Widget, text: str) -> ttk.Label:
+    """Drop a tiny ⓘ glyph that shows ``text`` on hover. Use right next to a
+    label or input. Returns the label so the caller can grid/pack it.
+
+    Usage:
+        ttk.Label(row, text="Resolution:").pack(side="left")
+        info_icon(row, "Square edge in pixels...").pack(side="left")
+        ttk.Combobox(row, ...).pack(side="left")
+    """
+    t = gui_theme.THEME
+    glyph = ttk.Label(
+        parent, text="ⓘ", style="InfoIcon.TLabel",
+    )
+    # Configure the style once on first use; harmless to re-apply.
+    style = ttk.Style()
+    style.configure(
+        "InfoIcon.TLabel",
+        background=t.BG_ROOT,
+        foreground=t.ACCENT_VIOLET,
+        font=t.FONT_BODY,
+        padding=(2, 0, 6, 0),
+        cursor="question_arrow",
+    )
+    Tooltip.bind(glyph, text)
+    return glyph

@@ -1,23 +1,27 @@
 """Theme, font resolution, and ttk styling for the Tkinter GUI.
 
-The GUI has one aesthetic POV — LCARS-inspired obsidian/glass — expressed
-through a single source of truth (`Theme`) and applied via `apply_style`.
-Keep ad-hoc hex strings OUT of the rest of the GUI; reach into `THEME`
-instead.
+The GUI's aesthetic POV is **"alluring rumors"** — a warm jewel-tone
+palette built around Behr's 2025 colour of the year. Cream parchment
+ground, burgundy as the dominant accent, olive as the secondary, deep
+slate for text, soft gold for highlights. Read it as a darkroom-atelier /
+field-notes mood, not a server console.
 
-Two things live here that used to be inline in `gui.py`:
+Single source of truth: every colour the GUI uses is on :class:`Theme`,
+applied via :func:`apply_style`. Don't sprinkle hex strings around the
+rest of the GUI — reach into :data:`THEME` instead.
 
-1. :class:`Theme` — palette, type scale, spacing. Replaces the previous
-   :class:`_Theme` with slightly better contrast (AA) and a new
-   ``FOCUS_RING`` token. :meth:`Theme.dark` is a factory that returns the
-   current palette; :meth:`Theme.light` is a stub for a future light mode
-   (no widget actually switches theme at runtime yet).
+Two things live here:
+
+1. :class:`Theme` — palette, type scale, spacing. :meth:`Theme.parchment`
+   is the new default (warm cream); :meth:`Theme.dark` is kept as an
+   opt-in dim-room variant that maps the same five jewel tones onto a
+   warm near-black ground for late-night work.
 2. :func:`apply_style` — configures every ttk widget class the GUI uses
    plus the raw-tk widgets that Tk can't reach via styles.
 
-Font resolution is platform-aware: we look up :attr:`Theme.DISPLAY_CANDIDATES`
-and :attr:`Theme.MONO_CANDIDATES` against ``tkFont.families()`` at startup
-and pick the first installed face. No more silent fallback to generic sans.
+Font resolution is platform-aware: we look up :data:`DISPLAY_CANDIDATES`
+and :data:`MONO_CANDIDATES` against ``tkFont.families()`` at startup and
+pick the first installed face. No silent fallback to generic sans.
 """
 
 from __future__ import annotations
@@ -36,14 +40,16 @@ PAD = 8
 # ---------- font resolution ----------
 
 #: Ordered candidates for the primary display typeface. We prefer a
-#: condensed/geometric sans for the LCARS feel; fall back to classic
-#: interface sans only if nothing better is on this machine.
+#: warm humanist serif (atelier feel); fall back through interface sans
+#: families that ship on most desktops.
 DISPLAY_CANDIDATES: Tuple[str, ...] = (
-    "Eurostile Extended",
-    "Bahnschrift",
+    "Cormorant Garamond",
+    "EB Garamond",
+    "Spectral",
+    "Source Serif Pro",
+    "Source Serif 4",
+    "Georgia",
     "Helvetica Neue",
-    "HelveticaNeue",
-    "SF Pro Display",
     "Segoe UI",
     "Ubuntu",
     "DejaVu Sans",
@@ -89,38 +95,50 @@ def _resolve_face(candidates: Tuple[str, ...], fallback: str) -> str:
 class Theme:
     """Palette + type scale + spacing. One instance per runtime.
 
-    Surfaces are layered near-black tiers (root < panel < elevated < input)
-    so depth is communicated through tonal shift rather than borders.
-    Accents are amber (dominant), cyan (secondary), violet (tertiary),
-    gold (caution), red (danger).
+    Five base colours from Behr's "Alluring Rumors" 2025 palette plus
+    derived light/dark tints for surfaces. Surfaces stack as
+    parchment → cream → warm-beige → near-white-input so depth is
+    communicated through tonal shift rather than borders. Accents are
+    burgundy (dominant), olive (secondary), slate (tertiary), gold
+    (highlight). The field names below intentionally keep their old
+    hue-coded shape (``ACCENT_AMBER`` etc.) so we don't have to rename
+    every call site — they just point to the new jewel tones now.
     """
 
-    # --- surfaces ---
-    BG_ROOT: str = "#05070D"
-    BG_PANEL: str = "#0B1020"
-    BG_ELEVATED: str = "#121A33"
-    BG_INPUT: str = "#0E1526"
-    BG_HOVER: str = "#1A2340"
-    BG_PRESSED: str = "#22305A"
+    # --- surfaces (warm parchment, light by default) ---
+    BG_ROOT: str = "#F1EDE2"        # base parchment (Behr cream)
+    BG_PANEL: str = "#E8E1D0"        # panel — slightly deeper cream
+    BG_ELEVATED: str = "#DCD2BB"     # raised cards
+    BG_INPUT: str = "#FBF8EE"        # input fields — almost-white
+    BG_HOVER: str = "#D4C8AC"        # hover wash on buttons
+    BG_PRESSED: str = "#C2B392"      # pressed state
 
-    # --- accents ---
-    ACCENT_AMBER: str = "#FFB74D"
-    ACCENT_CYAN: str = "#6FD6FF"
-    ACCENT_VIOLET: str = "#B79CFF"
-    ACCENT_RED: str = "#FF6B6B"
-    ACCENT_GOLD: str = "#F2C14E"
-    ACCENT_GREEN: str = "#8BE9A7"  # used for completed-step dots
+    # --- accents (the five Alluring Rumors hues) ---
+    # ``ACCENT_AMBER`` is the legacy name for the dominant accent — it
+    # now carries the burgundy. ``ACCENT_CYAN`` is the secondary (olive),
+    # ``ACCENT_VIOLET`` the tertiary (slate). Renaming the fields would
+    # cascade across every tab module, so we just remap meanings here.
+    ACCENT_AMBER: str = "#7B4C4F"    # burgundy — primary / focus / progress
+    ACCENT_CYAN: str = "#717051"     # olive — secondary / sub-headers
+    ACCENT_VIOLET: str = "#4E505F"   # slate — tertiary / muted accent
+    ACCENT_RED: str = "#5C383B"      # deeper burgundy for caution buttons
+    ACCENT_GOLD: str = "#C99738"     # warmer mustard (deeper than #F6C886
+                                      # so it reads on cream); the soft gold
+                                      # itself lives on ``ACCENT_GOLD_SOFT``
+    ACCENT_GREEN: str = "#717051"    # olive doubles as success/done
+    ACCENT_GOLD_SOFT: str = "#F6C886"  # soft butter — used as a highlight
+                                       # wash, not for fg/bg pairings
 
     # --- structural strokes ---
-    DIVIDER: str = "#1F2A47"
-    BORDER_SOFT: str = "#2A3656"
-    FOCUS_RING: str = "#FFB74D"  # new in this refactor
+    DIVIDER: str = "#C9BDA2"         # warm beige rule
+    BORDER_SOFT: str = "#B5AB94"     # field borders, softer than divider
+    FOCUS_RING: str = "#7B4C4F"      # burgundy ring on focus
 
-    # --- text ---
-    TEXT_PRIMARY: str = "#E8EEF8"
-    TEXT_SECONDARY: str = "#C4CEE3"   # bumped from #B7C0D8 (AA safe on BG_ROOT)
-    TEXT_MUTED: str = "#8A94B2"        # bumped from #6B7591 for AA contrast
-    TEXT_ON_ACCENT: str = "#0A0E1A"
+    # --- text (deep slate; #4E505F mid-stop and a deeper tint for body) ---
+    TEXT_PRIMARY: str = "#2A2C36"    # body — derived from #4E505F
+    TEXT_SECONDARY: str = "#4E505F"  # the slate as-is; secondary copy
+    TEXT_MUTED: str = "#7A7468"      # warm grey for hints / placeholders
+    TEXT_ON_ACCENT: str = "#F1EDE2"  # cream on burgundy / olive / slate
 
     # --- fonts (concrete faces resolved via Theme.configure_fonts) ---
     _display_face: str = field(default="Helvetica")
@@ -159,39 +177,45 @@ class Theme:
     # --- factories ---
 
     @classmethod
-    def dark(cls) -> "Theme":
-        """The canonical LCARS dark palette. Current default."""
+    def parchment(cls) -> "Theme":
+        """Default — warm cream parchment with jewel-tone accents."""
         return cls()
 
     @classmethod
-    def light(cls) -> "Theme":
-        """Stub for a future light mode. Not wired to any toggle yet.
+    def dark(cls) -> "Theme":
+        """Dim-room variant — same five jewel hues over warm near-black.
 
-        Returning an honest light palette here lets callers write
-        ``Theme.light()`` without crashing, and makes future wiring of a
-        toggle a drop-in change in one place.
+        Kept around for late-night curation sessions. Not wired to a
+        runtime toggle yet; switch by changing the call in
+        :func:`apply_style`.
         """
         return cls(
-            BG_ROOT="#F5F2EC",
-            BG_PANEL="#EAE4D8",
-            BG_ELEVATED="#D8CFBE",
-            BG_INPUT="#FFFFFF",
-            BG_HOVER="#E0D6C0",
-            BG_PRESSED="#C7BBA0",
-            DIVIDER="#B9AF98",
-            BORDER_SOFT="#9C927B",
-            FOCUS_RING="#C97B1A",
-            TEXT_PRIMARY="#14110B",
-            TEXT_SECONDARY="#3C3627",
-            TEXT_MUTED="#6A6147",
-            TEXT_ON_ACCENT="#0A0E1A",
-            ACCENT_AMBER="#C97B1A",
-            ACCENT_CYAN="#2E7BA4",
-            ACCENT_VIOLET="#6E4BB0",
-            ACCENT_RED="#B84848",
-            ACCENT_GOLD="#A98221",
-            ACCENT_GREEN="#3B8F55",
+            BG_ROOT="#1F1A14",      # deep warm umber
+            BG_PANEL="#2A231B",      # slightly raised
+            BG_ELEVATED="#3A2F23",   # cards
+            BG_INPUT="#15110C",      # input wells (deeper than root)
+            BG_HOVER="#3F3327",
+            BG_PRESSED="#544230",
+            ACCENT_AMBER="#C99090",  # burgundy lifted for dark bg readability
+            ACCENT_CYAN="#A6A578",   # olive lifted
+            ACCENT_VIOLET="#A0A4B5", # slate lifted
+            ACCENT_RED="#8E5358",
+            ACCENT_GOLD="#F6C886",   # soft gold reads great on warm dark
+            ACCENT_GREEN="#A6A578",
+            ACCENT_GOLD_SOFT="#F6C886",
+            DIVIDER="#3F3327",
+            BORDER_SOFT="#544230",
+            FOCUS_RING="#F6C886",
+            TEXT_PRIMARY="#F1EDE2",
+            TEXT_SECONDARY="#D8CFBE",
+            TEXT_MUTED="#9C927B",
+            TEXT_ON_ACCENT="#1F1A14",
         )
+
+    @classmethod
+    def light(cls) -> "Theme":
+        """Alias kept for backwards compatibility — returns parchment."""
+        return cls.parchment()
 
     def with_fonts(self, display_face: str, mono_face: str) -> "Theme":
         """Return a copy of this theme with resolved concrete font faces."""
@@ -211,6 +235,7 @@ class Theme:
             ACCENT_RED=self.ACCENT_RED,
             ACCENT_GOLD=self.ACCENT_GOLD,
             ACCENT_GREEN=self.ACCENT_GREEN,
+            ACCENT_GOLD_SOFT=self.ACCENT_GOLD_SOFT,
             DIVIDER=self.DIVIDER,
             BORDER_SOFT=self.BORDER_SOFT,
             FOCUS_RING=self.FOCUS_RING,
@@ -226,22 +251,22 @@ class Theme:
 
 #: Live theme instance. Populated by :func:`apply_style`; safe to read after
 #: that call. Modules that need palette access import this name.
-THEME: Theme = Theme.dark()
+THEME: Theme = Theme.parchment()
 
 
 # ---------- style application ----------
 
 def apply_style(root: tk.Tk) -> Theme:
-    """Resolve fonts, apply the LCARS visual language, return the live theme.
+    """Resolve fonts, apply the parchment visual language, return the live theme.
 
     Must be called *after* the :class:`tk.Tk` root is created so we can
     inspect installed font families.
     """
     global THEME
 
-    display_face = _resolve_face(DISPLAY_CANDIDATES, fallback="Helvetica")
+    display_face = _resolve_face(DISPLAY_CANDIDATES, fallback="Georgia")
     mono_face = _resolve_face(MONO_CANDIDATES, fallback="Courier New")
-    THEME = Theme.dark().with_fonts(display_face, mono_face)
+    THEME = Theme.parchment().with_fonts(display_face, mono_face)
     t = THEME
 
     style = ttk.Style(root)

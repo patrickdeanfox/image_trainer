@@ -108,37 +108,68 @@ def _cmd_prep(args: argparse.Namespace) -> None:
     # installed the [face] extra) is a global choice and is NOT treated as
     # a per-image failure.
     #
+    # We also persist the positive case (face_detected=True) so the Review
+    # tab can offer a "faces / no-face" filter.
+    #
     # Dry-run explicitly skips this: the user hasn't committed to a crop
     # yet, so we don't want to mutate review.json.
-    if not dry_run and result.face_failed_stems:
+    if not dry_run and (result.face_failed_stems or result.face_success_stems):
         from .pipeline import review as review_mod
 
         review = review_mod.load(project)
+        for stem in result.face_success_stems:
+            entry = review.entries.get(stem)
+            if entry is None:
+                continue
+            entry.face_detected = True
         for stem in result.face_failed_stems:
             entry = review.entries.get(stem)
             if entry is None:
                 continue
+            entry.face_detected = False
             entry.include = False
             note = "prep: no face detected"
-            entry.notes = (
-                note if not entry.notes else f"{entry.notes}; {note}"
-            )
+            if note not in (entry.notes or ""):
+                entry.notes = (
+                    note if not entry.notes else f"{entry.notes}; {note}"
+                )
         review_mod.save(project, review)
 
 
 def _cmd_caption(args: argparse.Namespace) -> None:
     """Handler for ``trainer caption``: run the configured captioner(s).
 
-    Respects ``Project.captioner``:
-
-    - ``blip`` → BLIP sentence only.
-    - ``wd14`` → WD14 Danbooru-style tag list only (NSFW-aware).
-    - ``both`` (default) → BLIP sentence + WD14 tags concatenated.
-
-    ``--mode`` overrides the project setting for a single run.
+    Respects ``Project.captioner`` (overridable with ``--mode``) and the
+    threshold + suffix knobs on the Project. The ``--nsfw`` preset lowers
+    the WD14 general threshold and prepends explicit anatomy hints to the
+    suffix so prompts skew toward adult-content vocabulary the LoRA can
+    actually learn.
     """
     project = Project.load(_resolve_project_dir(args.project_dir))
     mode = (args.mode or project.captioner or "both").lower()
+
+    # Resolve thresholds + suffix, allowing CLI overrides + the NSFW preset.
+    general_threshold = (
+        args.general_threshold
+        if args.general_threshold is not None
+        else project.caption_general_threshold
+    )
+    character_threshold = (
+        args.character_threshold
+        if args.character_threshold is not None
+        else project.caption_character_threshold
+    )
+    extra_suffix = (
+        args.extra_suffix
+        if args.extra_suffix is not None
+        else project.caption_extra_suffix
+    )
+    nsfw = args.nsfw or project.caption_nsfw_preset
+    if nsfw:
+        # Lower the bar so booru anatomy tags actually surface.
+        general_threshold = min(general_threshold, 0.25)
+        if not extra_suffix.strip():
+            extra_suffix = "explicit, nsfw, detailed anatomy"
 
     if mode == "blip":
         from .pipeline.caption import caption_dataset
@@ -146,6 +177,7 @@ def _cmd_caption(args: argparse.Namespace) -> None:
             project.processed_dir,
             trigger_word=project.trigger_word,
             model_id=project.caption_model_id,
+            extra_suffix=extra_suffix,
         )
     elif mode == "wd14":
         from .pipeline.caption_wd14 import caption_dataset_wd14
@@ -153,6 +185,9 @@ def _cmd_caption(args: argparse.Namespace) -> None:
             project.processed_dir,
             trigger_word=project.trigger_word,
             model_id=project.wd14_model_id,
+            general_threshold=general_threshold,
+            character_threshold=character_threshold,
+            extra_suffix=extra_suffix,
         )
     elif mode == "both":
         from .pipeline.caption_wd14 import caption_dataset_both
@@ -161,6 +196,9 @@ def _cmd_caption(args: argparse.Namespace) -> None:
             trigger_word=project.trigger_word,
             blip_model_id=project.caption_model_id,
             wd14_model_id=project.wd14_model_id,
+            general_threshold=general_threshold,
+            character_threshold=character_threshold,
+            extra_suffix=extra_suffix,
         )
     else:
         raise SystemExit(f"Unknown --mode {mode!r}; expected blip | wd14 | both.")
@@ -220,6 +258,41 @@ def _cmd_train(args: argparse.Namespace) -> None:
         resume=args.resume,
         max_steps_override=args.max_steps,
         note=args.note or "",
+        limit_images=args.limit_images,
+    )
+
+
+def _cmd_video_post(args: argparse.Namespace) -> None:
+    """Handler for ``trainer video-post``: run phases 4-7 on a Wan2GP mp4.
+
+    Wan2GP itself runs separately (typically via its own Gradio UI) — once
+    you have a raw video file, this subcommand extracts frames, upscales
+    with realesrgan-ncnn-vulkan, interpolates with rife-ncnn-vulkan, and
+    re-encodes the final at the target framerate.
+    """
+    from .pipeline.video import run_post_generation_pipeline
+
+    project = Project.load(_resolve_project_dir(args.project_dir))
+    raw = Path(args.raw_mp4).expanduser().resolve()
+    if not raw.exists():
+        raise SystemExit(f"Raw mp4 not found: {raw}")
+
+    def _progress(phase: str, msg: str) -> None:
+        print(f"[{phase}] {msg}", flush=True)
+
+    result = run_post_generation_pipeline(
+        project, raw,
+        target_framerate=args.framerate,
+        rife_multiplier=args.rife_multiplier,
+        upscale_model=args.upscale_model,
+        upscale_scale=args.upscale_scale,
+        progress=_progress,
+    )
+    print(f"\nFinal video: {result['final_mp4']}")
+    print(
+        f"  raw frames: {result['n_frames_raw']}"
+        f"  → upscaled: {result['n_frames_upscaled']}"
+        f"  → interpolated: {result['n_frames_interpolated']}"
     )
 
 
@@ -228,6 +301,23 @@ def _cmd_generate(args: argparse.Namespace) -> None:
     from .pipeline.generate import generate
 
     project = Project.load(_resolve_project_dir(args.project_dir))
+    # Each --extra-lora is "PATH" or "PATH:WEIGHT". WEIGHT defaults to 1.0.
+    extras: list[tuple[Path, float]] = []
+    for raw in args.extra_lora or []:
+        if ":" in raw and not raw.startswith("/"):
+            # Heuristic: treat ':' as separator only when it's not a Windows
+            # drive path or absolute UNIX path with ':' in a folder name. Easy
+            # rule: split on the LAST ':' so "/path/with:colons.safetensors:0.7"
+            # works.
+            path_part, _, weight_part = raw.rpartition(":")
+            try:
+                weight = float(weight_part)
+                extras.append((Path(path_part).expanduser().resolve(), weight))
+                continue
+            except ValueError:
+                pass
+        # No weight supplied — default to 1.0.
+        extras.append((Path(raw).expanduser().resolve(), 1.0))
     generate(
         project,
         prompt=args.prompt,
@@ -236,6 +326,11 @@ def _cmd_generate(args: argparse.Namespace) -> None:
         steps=args.steps,
         guidance=args.guidance,
         seed=args.seed,
+        use_trained_lora=not args.no_trained_lora,
+        extra_loras=extras,
+        width=args.width,
+        height=args.height,
+        sampler=args.sampler,
     )
 
 
@@ -395,6 +490,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override Project.captioner for this run. Default: use the project's setting.",
     )
+    sp.add_argument(
+        "--general-threshold",
+        type=float,
+        default=None,
+        help="WD14 general-tag confidence cutoff (0.0-1.0). Lower = more tags. Default: 0.35.",
+    )
+    sp.add_argument(
+        "--character-threshold",
+        type=float,
+        default=None,
+        help="WD14 character-tag confidence cutoff (0.0-1.0). Default: 0.85 (suppresses).",
+    )
+    sp.add_argument(
+        "--extra-suffix",
+        default=None,
+        help=(
+            "Free-text appended to every caption. Use for stylistic anchors "
+            "('photorealistic, soft lighting') or NSFW hints. Comma-separated."
+        ),
+    )
+    sp.add_argument(
+        "--nsfw",
+        action="store_true",
+        help=(
+            "Adult-dataset preset: lowers WD14 general threshold to 0.25 "
+            "and seeds the suffix with 'explicit, nsfw, detailed anatomy' "
+            "if you haven't set one. Combine with --mode wd14 or both."
+        ),
+    )
     sp.set_defaults(func=_cmd_caption)
 
     sp = sub.add_parser("train", help="Train a LoRA on processed/ images.")
@@ -406,9 +530,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--resolution", type=int, default=None)
     sp.add_argument("--grad-accum", type=int, default=None)
     sp.add_argument("--note", default=None, help="Short note appended to logs/journal.txt for this run.")
+    sp.add_argument(
+        "--limit-images",
+        type=int,
+        default=None,
+        help=(
+            "Cap the number of included images this run trains on. Useful when "
+            "you only have a short window of PC time — a single-image run "
+            "completes in minutes, the full set is the overnight workflow. "
+            "Stems are taken from the head of the included list (alphabetical). "
+            "Does not change cache validity for the next full run."
+        ),
+    )
     sp.set_defaults(func=_cmd_train)
 
-    sp = sub.add_parser("generate", help="Generate images with base + trained LoRA.")
+    sp = sub.add_parser(
+        "generate",
+        help="Generate images with base + (optionally) trained LoRA + extras.",
+    )
     sp.add_argument("project_dir")
     sp.add_argument("--prompt", required=True)
     sp.add_argument("--negative", default="")
@@ -416,7 +555,68 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--steps", type=int, default=30)
     sp.add_argument("--guidance", type=float, default=7.0)
     sp.add_argument("--seed", type=int, default=None)
+    sp.add_argument(
+        "--no-trained-lora",
+        action="store_true",
+        help=(
+            "Skip loading the project's trained LoRA — render with just the "
+            "base checkpoint (and any --extra-lora). Useful for vanilla "
+            "text-to-image and for comparing 'with vs without LoRA'."
+        ),
+    )
+    sp.add_argument(
+        "--extra-lora",
+        action="append",
+        default=None,
+        help=(
+            "Path to an additional .safetensors LoRA to stack on top. Optional "
+            "weight via PATH:WEIGHT (e.g. /loras/anime.safetensors:0.7). "
+            "Repeat the flag for multiple LoRAs. Useful for civitai style packs."
+        ),
+    )
+    sp.add_argument(
+        "--width", type=int, default=1024,
+        help="Output width in pixels. Use SDXL-friendly sizes (832, 1024, 1216).",
+    )
+    sp.add_argument(
+        "--height", type=int, default=1024,
+        help="Output height in pixels. Use SDXL-friendly sizes (832, 1024, 1216).",
+    )
+    sp.add_argument(
+        "--sampler",
+        default="default",
+        choices=["default", "euler", "euler_a", "dpmpp_2m", "dpmpp_2m_karras", "unipc"],
+        help=(
+            "Diffusers scheduler to use. 'dpmpp_2m_karras' and 'unipc' "
+            "converge fastest (good output at 20-25 steps). 'euler_a' is the "
+            "classic ancestral choice for varied outputs."
+        ),
+    )
     sp.set_defaults(func=_cmd_generate)
+
+    sp = sub.add_parser(
+        "video-post",
+        help="Run phases 4-7 on a Wan2GP mp4: extract → upscale → RIFE → assemble.",
+    )
+    sp.add_argument("project_dir")
+    sp.add_argument("raw_mp4", help="Path to the raw Wan2GP mp4 to upscale + interpolate.")
+    sp.add_argument(
+        "--framerate", type=int, default=32,
+        help="Output framerate of the final mp4 (default 32, matching RIFE 2x of 16fps).",
+    )
+    sp.add_argument(
+        "--rife-multiplier", type=int, default=2, choices=[2, 4],
+        help="RIFE frame interpolation factor. 2 = double, 4 = quadruple.",
+    )
+    sp.add_argument(
+        "--upscale-model", default="realesr-animevideov3",
+        help="Real-ESRGAN model name (e.g. realesr-animevideov3, realesrgan-x4plus).",
+    )
+    sp.add_argument(
+        "--upscale-scale", type=int, default=2,
+        help="Real-ESRGAN scale factor (default 2 → 720p becomes 1440p).",
+    )
+    sp.set_defaults(func=_cmd_video_post)
 
     sp = sub.add_parser("gui", help="Launch the Tkinter wizard.")
     sp.set_defaults(func=_cmd_gui)

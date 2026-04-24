@@ -77,5 +77,24 @@ preview/
 # GUI recent-projects MRU cache (lives next to the projects root)
 .recent_projects.json
 
+# Per-user settings (Wan2GP install path, future per-user prefs).
+# Lives next to the projects root; absolute paths are machine-specific.
+.user_settings.json
+
+# Shared community LoRA library (sits under projects-root/shared_loras/).
+# Defensive — if anyone ever creates one at the repo root, .safetensors
+# below already excludes the contents but the empty dir would still get
+# tracked.
+shared_loras/
+
+# Per-project video pipeline scratch space — extracted frames, upscaled
+# frames, RIFE-interpolated frames, raw + final mp4. Intermediate files
+# can be hundreds of MB to multi-GB per run.
+video/
+
+# Wan2GP install (default lives at ~/Apps/wan2gp/ outside the repo, but
+# defensive in case someone clones it inside).
+Wan2GP/
+
 # Local launcher shortcut (hardcoded absolute paths, machine-specific)
 image_trainer.desktop
