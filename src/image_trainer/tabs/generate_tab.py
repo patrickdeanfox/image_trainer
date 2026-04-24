@@ -59,8 +59,22 @@ QUALITY_STACKS: list[tuple[str, str, str]] = [
         "Canonical Pony photoreal NSFW opener — short, ~10 tokens. "
         "score_X tags are mandatory for Pony quality; rating_explicit "
         "unlocks the explicit content range; source_real biases toward "
-        "photographic output. Best default for personal-likeness LoRAs "
-        "trained on photo source material.",
+        "photographic output. Works best on Pony fine-tunes trained on "
+        "photo data (Pony Realism, Lustify XL); on vanilla Pony V6 XL "
+        "output still drifts stylised — use 'Pony · heavy photoreal' "
+        "instead, or switch base.",
+    ),
+    (
+        "Pony · heavy photoreal (anti-anime)",
+        "score_9, score_8_up, score_7_up, source_real, rating_explicit, "
+        "photo, photorealistic, raw photo, real photograph, "
+        "35mm film, skin pores, subsurface scattering, ",
+        "For vanilla Pony V6 XL when the model keeps drifting toward "
+        "anime / illustration. Adds heavier photo anchors — 35mm film, "
+        "skin pores, subsurface scattering — that Pony was trained to "
+        "associate with its photo-distribution. Pair with 'NSFW · "
+        "photoreal push' negative for maximum effect. Bigger token cost "
+        "(~20) — install compel if the rest of your prompt is long.",
     ),
     (
         "Pony · photoreal SFW",
@@ -99,6 +113,30 @@ QUALITY_STACKS: list[tuple[str, str, str]] = [
         "the NSFW uncensor negative preset for explicit work.",
     ),
     (
+        "Photoreal pro (non-Pony) · heavy",
+        "raw photo, professional photograph, dslr, shot on leica, "
+        "35mm film grain, kodak portra 400, natural skin texture, "
+        "skin pores, subsurface scattering, sharp focus, detailed skin, "
+        "photorealistic, hyperrealistic, ",
+        "Heaviest photoreal anchor stack for non-Pony realism bases "
+        "(RealVisXL V5, CyberRealistic XL, EpicRealism XL). Camera + film "
+        "stock + skin-detail vocabulary anchors output firmly in the "
+        "photograph distribution. About 20 tokens; pair with 'NSFW · "
+        "photoreal push' negative. Do NOT use with Pony — the non-Pony "
+        "vocabulary confuses Pony's score_X training.",
+    ),
+    (
+        "Amateur / OnlyFans aesthetic",
+        "iphone photo, smartphone photo, candid snapshot, amateur "
+        "photograph, natural skin, no makeup filter, real woman, "
+        "instagram aesthetic, slight motion blur, ",
+        "Mimics the smartphone + amateur-photography distribution most "
+        "OnlyFans / personal-likeness training datasets are drawn from. "
+        "Best match to the LoRA's training distribution once you have a "
+        "trained LoRA. 'no makeup filter' + 'real woman' actively suppress "
+        "the airbrushed / doll-like output Pony defaults to.",
+    ),
+    (
         "Lustify / Pony Realism",
         "score_9, score_8_up, score_7_up, source_real, rating_explicit, "
         "professional photography, ",
@@ -135,6 +173,54 @@ PROMPT_TEMPLATES: list[tuple[str, str, str]] = [
         "photoreal NSFW quality stack and the NSFW · uncensor negative "
         "preset; replace 'blonde' with your subject's hair colour for the "
         "trained-LoRA case.",
+    ),
+    (
+        "Photoreal · heavy anti-anime anchor",
+        "{trigger}, 1girl, beautiful blonde woman, real woman, not anime, "
+        "not illustration, photograph, raw photo, shot on leica, "
+        "35mm film grain, kodak portra 400, natural skin texture, "
+        "skin pores visible, subsurface scattering, realistic skin tones, "
+        "slight skin blemishes, fine facial hair, fully nude, full body "
+        "visible, standing, contrapposto, looking at viewer, natural body "
+        "proportions, anatomically correct, soft window light, neutral "
+        "background, shallow depth of field, sharp focus on eyes, {body}",
+        "For when vanilla Pony keeps giving you anime / illustrated "
+        "output despite source_real. This template stuffs heavier photo "
+        "anchors — film stock, skin pores, subsurface scattering, slight "
+        "blemishes — that force Pony into its photograph distribution. "
+        "'not anime, not illustration, real woman' are explicit anti-style "
+        "tags. Pair with 'Pony · heavy photoreal (anti-anime)' quality "
+        "stack + 'NSFW · photoreal push' negative. Long — install compel "
+        "to use with extra body-text.",
+    ),
+    (
+        "Amateur selfie · iPhone aesthetic",
+        "{trigger}, 1girl, beautiful blonde woman, amateur selfie, "
+        "iphone photo, smartphone photo, selfie in mirror, bedroom "
+        "background, natural lighting, no filter, real skin, minor "
+        "imperfections, candid expression, no makeup filter, fully nude, "
+        "full body or mirror reflection, holding phone, casual intimate "
+        "moment, slight motion blur, instagram aesthetic, {body}",
+        "Mimics the OnlyFans / Instagram smartphone aesthetic that most "
+        "personal-likeness LoRAs are trained on. This is the CLOSEST "
+        "distribution to your training data if the dataset came from "
+        "phone shots — the LoRA fires strongest here. Suppresses Pony's "
+        "glossy-magazine tendency in favour of real-photo feel.",
+    ),
+    (
+        "Studio glamour nude · professional",
+        "{trigger}, 1girl, beautiful blonde woman, professional glamour "
+        "photography, studio setup, softbox key light, rim light, "
+        "seamless grey backdrop, medium format camera, hasselblad, "
+        "natural skin detail, high detail body, fully nude, full body "
+        "standing pose, arched back, looking at viewer, professional "
+        "model, magazine quality, shallow depth of field, raw photo, "
+        "editorial nude, tasteful composition, {body}",
+        "Polished glamour nude with professional-studio anchors (softbox, "
+        "rim light, medium format, hasselblad). Use with Lustify / Pony "
+        "Realism quality stack for maximum 'fashion magazine' feel. Best "
+        "when you want output that looks shot in a real photo studio "
+        "rather than a bedroom.",
     ),
     (
         "Portrait · headshot test",
@@ -348,6 +434,41 @@ NEGATIVE_PRESETS: list[tuple[str, str, str]] = [
         "look.",
     ),
     (
+        "NSFW · heavy anti-anime (aggressive)",
+        "score_4, score_5, score_6, source_anime, source_cartoon, "
+        "anime, manga, illustration, drawing, painting, cartoon, sketch, "
+        "lineart, cel shading, anime style, cartoonish, stylized, "
+        "3d render, cgi, unreal engine, blender, rendered, "
+        "doll, figurine, mannequin, plastic skin, plastic, smooth skin, "
+        "airbrushed, flawless skin, perfect skin, porcelain skin, "
+        "oversaturated, vivid colors, highly saturated, "
+        "big eyes, large eyes, anime eyes, shiny eyes, "
+        "low quality, worst quality, lowres, blurry, watermark, "
+        "signature, text, bad anatomy, deformed, extra limbs, extra "
+        "fingers, fused fingers, malformed hands, censored, mosaic",
+        "Maximum anti-anime / anti-stylised push. Use when the standard "
+        "photoreal push still gives you illustrated output — this one "
+        "also kills the stylised 3D-render look and Pony's characteristic "
+        "large-eye anime-face proportions. Pair with 'Pony · heavy "
+        "photoreal' stack and the 'Photoreal · heavy anti-anime anchor' "
+        "template. Heavier token budget but worth it on vanilla Pony.",
+    ),
+    (
+        "NSFW · real-skin imperfection",
+        "score_4, score_5, score_6, airbrushed, photoshopped, retouched, "
+        "perfect skin, porcelain skin, plastic skin, smooth skin, "
+        "flawless skin, glossy skin, wet-look skin, doll skin, "
+        "oversaturated, vivid, hdr, "
+        "anime, illustration, drawing, cartoon, 3d render, cgi, "
+        "low quality, blurry, watermark, signature, bad anatomy, "
+        "deformed, extra limbs, extra fingers, fused fingers",
+        "Targets the 'plastic doll' skin look specifically — Pony's "
+        "biggest tell when it's trying to look photoreal but isn't. Adds "
+        "'airbrushed / photoshopped / retouched / glossy' to the "
+        "negative so output gets actual pore texture + natural skin "
+        "variation instead of Instagram-filter perfection.",
+    ),
+    (
         "Anime / illustrated push",
         "photo, photograph, photorealistic, photo realistic, realistic, "
         "3d, 3d render, real life, real person, dslr, raw photo, "
@@ -399,37 +520,59 @@ ASPECT_RATIOS: list[tuple[str, int, int]] = [
 
 
 #: NSFW-friendly base checkpoint families with one-line guidance.
+#: Photoreal-first ordering — vanilla Pony V6 XL is deliberately NOT at
+#: the top because it's ~50% anime-trained and drifts stylised even with
+#: source_real. For photoreal work, start from a Pony fine-tune that was
+#: trained specifically on photo data.
 BASE_RECOMMENDATIONS: list[tuple[str, str]] = [
     (
-        "Pony Diffusion V6 XL",
-        "Industry standard for NSFW. Tag-driven (score_9 stack required). "
-        "Works for anime + photoreal via source_real / source_anime. Least "
-        "censorship pushback of any common base.",
+        "Lustify XL  ★ best photoreal NSFW",
+        "Pony fine-tune trained heavily on photographic NSFW data. "
+        "Same score_X vocabulary as Pony but photorealistic output out "
+        "of the box — you DON'T have to fight anime bias. Top pick for "
+        "personal-likeness LoRA work. Civitai.",
     ),
     (
-        "Lustify XL",
-        "Pony fine-tune dialled toward photoreal NSFW. Same prompt vocabulary. "
-        "Better skin / lighting than vanilla Pony for photoreal subjects.",
+        "Pony Realism V2.x  ★ photoreal",
+        "Another Pony fine-tune optimized for photoreal output. Slightly "
+        "different skin tone + lighting bias than Lustify. Pair with Pony "
+        "score_X stack. Worth trying both to see which you prefer. Civitai.",
     ),
     (
-        "Pony Realism / Pony Real",
-        "Another Pony fine-tune family. Try several — community-trained "
-        "variants vary wildly in skin tone, anatomy bias, lighting style.",
+        "CyberRealistic Pony",
+        "Another Pony photoreal fine-tune. Tends toward warmer lighting "
+        "and glossier skin — less gritty than Lustify, less editorial "
+        "than Pony Realism. Civitai.",
     ),
     (
-        "RealVisXL V4 / V5",
-        "SDXL fine-tune for photoreal. Tighter on NSFW than Pony — needs the "
-        "uncensor negative + 'rating explicit' style hints.",
+        "RealVisXL V5  ·  non-Pony photoreal",
+        "SDXL fine-tune, not Pony-derivative. No score_X tags. Cleaner "
+        "faces but tighter on NSFW — needs the heavier uncensor negative "
+        "and explicit body-part anchors in the prompt. Use the 'Photoreal "
+        "pro (non-Pony)' quality stack.",
+    ),
+    (
+        "EpicRealism XL",
+        "Another non-Pony photoreal SDXL. Strong on lighting + skin. "
+        "Same caveats as RealVisXL — tighter NSFW, use heavy uncensor.",
+    ),
+    (
+        "Pony Diffusion V6 XL  ·  caveat",
+        "The original. Industry standard but ~50% anime-trained — drifts "
+        "stylised even with source_real. Use 'Pony · heavy photoreal' "
+        "quality stack + heavy anti-anime negative to force photo output. "
+        "Or just switch to Lustify / Pony Realism for photoreal work.",
     ),
     (
         "JuggernautXL",
-        "Versatile SDXL fine-tune. Good photoreal baseline if you want fewer "
-        "Pony-isms. Less explicit content out of the box.",
+        "Versatile SDXL fine-tune. Good photoreal baseline, fewer "
+        "Pony-isms. Tighter on NSFW than the Pony family.",
     ),
     (
         "Illustrious-XL / NoobAI-XL",
         "Anime/illustration NSFW. Different prompt vocabulary "
-        "(masterpiece / very aware / etc.). Excellent for stylised work.",
+        "(masterpiece / very aware / etc.). Only if you WANT stylised "
+        "output.",
     ),
 ]
 
@@ -438,8 +581,20 @@ BASE_RECOMMENDATIONS: list[tuple[str, str]] = [
 #: civitai LoRAs come and go).
 LORA_RECOMMENDATIONS: list[tuple[str, str]] = [
     (
+        "Realistic skin  ★ photoreal fix",
+        "Search civitai for 'realistic skin XL', 'real skin SDXL', "
+        "'film skin LoRA', 'skin pores LoRA'. Single biggest lever for "
+        "breaking out of Pony's plastic-doll skin. Stack at 0.5-0.8.",
+    ),
+    (
+        "Anti-anime / photoreal push  ★ photoreal fix",
+        "Search 'photo style XL', 'realistic photo LoRA', 'film photography "
+        "XL'. Actively pushes Pony away from its anime default. Stack at "
+        "0.6-0.9 if you're fighting stylised output.",
+    ),
+    (
         "Detail enhancer",
-        "Search civitai for 'add detail XL' / 'detail tweaker XL'. Adds skin "
+        "Search 'add detail XL' / 'detail tweaker XL'. Adds skin "
         "micro-texture, fabric weave, hair strands. Use at 0.3-0.6 weight; "
         "higher = noisy output.",
     ),
@@ -449,26 +604,28 @@ LORA_RECOMMENDATIONS: list[tuple[str, str]] = [
         "deformity at the cost of some style. Use at 0.4-0.7.",
     ),
     (
-        "Realistic skin",
-        "Search 'realistic skin XL' / 'detailed skin XL'. Helps when your "
-        "base or trained LoRA produces plastic-looking skin.",
-    ),
-    (
         "Lighting LoRAs",
-        "Search 'cinematic lighting XL' / 'natural lighting XL'. Stack at "
-        "0.4-0.7 to push specific lighting setups (golden hour, neon, "
-        "studio key/fill).",
+        "Search 'cinematic lighting XL' / 'natural lighting XL' / "
+        "'golden hour LoRA'. Stack at 0.4-0.7 to push specific lighting "
+        "setups.",
     ),
     (
         "Pose pack",
-        "Search by pose name ('lying down XL', 'sitting XL', etc.). Pose "
-        "LoRAs are the best way to get reliable composition without ControlNet.",
+        "Search by pose name ('standing nude XL', 'lying down XL', "
+        "'contrapposto SDXL', etc.). Pose LoRAs are the best way to get "
+        "reliable composition without ControlNet.",
     ),
     (
-        "Style LoRAs",
-        "Search by aesthetic ('glamour XL', 'film grain XL', 'vintage 90s "
-        "XL'). Stack at 0.3-0.6 to push the overall look without "
-        "overpowering the trained likeness LoRA.",
+        "Film / analog aesthetic",
+        "Search '35mm film XL', 'kodak portra LoRA', 'analog photography "
+        "SDXL'. Stack at 0.4-0.7 for grain + colour-science authenticity. "
+        "Great anti-anime signal.",
+    ),
+    (
+        "Amateur / smartphone aesthetic",
+        "Search 'iphone photo LoRA', 'amateur photography XL', 'flash "
+        "photography SDXL'. Best match to OnlyFans-style training data. "
+        "Stack at 0.4-0.6.",
     ),
 ]
 
@@ -487,7 +644,10 @@ def build(gui: "TrainerGUI") -> None:
     gui.negative_var = tk.StringVar(value="")
     gui.n_var = tk.StringVar(value="4")
     gui.steps_var = tk.StringVar(value="28")
-    gui.guidance_var = tk.StringVar(value="6.5")
+    # 5.5 is the photoreal sweet spot for Pony-family bases — high CFG
+    # fries skin texture into plastic / hyperstylised looks. Bump to
+    # 7-8 if you want more prompt-following at the cost of realism.
+    gui.guidance_var = tk.StringVar(value="5.5")
     gui.seed_var = tk.StringVar(value="")
     # Trained LoRA defaults to OFF — most users in NSFW workflows hit
     # Generate first against the bare base to validate the prompt + sampler
@@ -845,20 +1005,30 @@ class _GenerateState:
                 style="Status.TLabel", wraplength=320, justify="left",
             ).grid(row=r * 2 + 1, column=0, sticky="w", padx=(12, 0), pady=(0, 4))
 
-        tips_box = ttk.LabelFrame(root, text="Quick tips", padding=PAD)
+        tips_box = ttk.LabelFrame(root, text="Photoreal survival guide", padding=PAD)
         tips_box.grid(row=3, column=0, sticky="we")
         tips_box.columnconfigure(0, weight=1)
         ttk.Label(
             tips_box,
             text=(
-                "• Start with the trained LoRA at 1.0 + a style LoRA at 0.4-0.7. "
-                "The trained LoRA carries likeness; the style LoRA carries vibe.\n"
-                "• If the face drifts away from training, drop steps from 30 to "
-                "22-25 — over-denoising can blur learned identity.\n"
-                "• Lock the seed when iterating prompt wording so you can see "
-                "exactly what each token contributes.\n"
-                "• Generate at the SDXL aspect bucket nearest your final crop. "
-                "Off-bucket sizes produce extra limbs / faces."
+                "• Getting anime output despite source_real? The BASE MODEL is "
+                "the biggest lever. Switch from vanilla Pony V6 XL to Lustify "
+                "XL or Pony Realism — both Pony fine-tunes but trained on "
+                "photo data, so photoreal output is the default not the fight.\n"
+                "• If you're stuck on vanilla Pony, use the 'Pony · heavy "
+                "photoreal (anti-anime)' quality stack AND the 'NSFW · heavy "
+                "anti-anime (aggressive)' negative preset. Combined they "
+                "actually get photoreal output from vanilla Pony.\n"
+                "• Drop CFG from 7 to 5-6 for photoreal. High CFG = fried / "
+                "hyperstylized / plastic-looking; low CFG = natural but may "
+                "ignore the prompt. 5.5 is the sweet spot for Pony photoreal.\n"
+                "• Add an anti-anime LoRA from civitai (search 'realistic "
+                "skin XL' or 'film photography LoRA') at 0.6-0.8. Bigger "
+                "lever than any prompt change.\n"
+                "• Stack trained likeness LoRA at 1.0 + style LoRA at 0.4-0.7. "
+                "Trained carries likeness; style carries photoreal feel.\n"
+                "• Lock the seed when iterating prompt wording — change one "
+                "word at a time, see exactly what it did."
             ),
             style="Status.TLabel", wraplength=320, justify="left",
         ).grid(row=0, column=0, sticky="w")
