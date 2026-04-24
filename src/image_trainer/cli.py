@@ -325,6 +325,32 @@ def _cmd_generate(args: argparse.Namespace) -> None:
                     pass
         # No parseable :WEIGHT — take the whole string as a path, weight 1.0.
         extras.append((Path(raw).expanduser().resolve(), 1.0))
+
+    # `--compare-loras-json PATH` is the GUI-driven entry to LoRA-recipe
+    # comparison. The JSON file is a tiny dict with two top-level keys:
+    #   recipes : [ {label, loras: [{path, weight}, ...]}, ... ]
+    #   stacks  : [ "stack label", ... ]   (empty list = current stack only)
+    # We use a JSON sidecar instead of stuffing nested data into argv.
+    compare_loras = False
+    lora_recipes = None
+    compare_stacks_subset = None
+    cl_json = getattr(args, "compare_loras_json", None)
+    if cl_json:
+        import json as _json
+        cl_payload = _json.loads(Path(cl_json).read_text(encoding="utf-8"))
+        compare_loras = True
+        lora_recipes = [
+            (
+                r["label"],
+                [
+                    (Path(item["path"]).expanduser().resolve(), float(item["weight"]))
+                    for item in r.get("loras", [])
+                ],
+            )
+            for r in cl_payload.get("recipes", [])
+        ]
+        compare_stacks_subset = cl_payload.get("stacks") or []
+
     generate(
         project,
         prompt=args.prompt,
@@ -340,6 +366,9 @@ def _cmd_generate(args: argparse.Namespace) -> None:
         sampler=args.sampler,
         output_name=args.output_name or "",
         compare_stacks=args.compare_stacks,
+        compare_loras=compare_loras,
+        lora_recipes=lora_recipes,
+        compare_stacks_subset=compare_stacks_subset,
     )
 
 
@@ -621,6 +650,18 @@ def build_parser() -> argparse.ArgumentParser:
             "(no quality prefix) — each stack's prefix is prepended "
             "automatically. Output goes to outputs/stack_compare_<timestamp>/. "
             "Overrides --n; the count is determined by the number of stacks."
+        ),
+    )
+    sp.add_argument(
+        "--compare-loras-json",
+        default=None,
+        help=(
+            "Path to a JSON file describing LoRA recipes + an optional "
+            "stack subset, used by the GUI's 'Compare LoRAs' dialog. The "
+            "JSON shape is {\"recipes\": [{\"label\": str, \"loras\": "
+            "[{\"path\": str, \"weight\": float}, ...]}, ...], "
+            "\"stacks\": [stack_label, ...]}. Output goes to "
+            "outputs/lora_compare_<timestamp>/."
         ),
     )
     sp.set_defaults(func=_cmd_generate)

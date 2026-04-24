@@ -262,6 +262,9 @@ def generate(
     sampler: str = "default",
     output_name: str = "",
     compare_stacks: bool = False,
+    compare_loras: bool = False,
+    lora_recipes: Optional[list[tuple[str, list[tuple[Path, float]]]]] = None,
+    compare_stacks_subset: Optional[list[str]] = None,
 ) -> list[Path]:
     """Generate `n` images with the project's base checkpoint and optional LoRAs.
 
@@ -363,8 +366,19 @@ def generate(
     # together with their relative weights. This is more stable than the
     # implicit "last loaded wins" behaviour and keeps the output reproducible
     # across runs that use the same set.
+    #
+    # In compare_loras mode the loop is different: we load EVERY unique
+    # adapter that appears in ANY recipe, and defer the `set_adapters`
+    # call to the per-render loop below (where each recipe activates its
+    # own subset). Reason: diffusers can load adapters dynamically but
+    # un-loading or re-loading mid-pipe-offload is brittle — load-once,
+    # switch-via-set_adapters is the stable pattern.
     adapter_names: list[str] = []
     adapter_weights: list[float] = []
+    # Map from path-stem → sanitised adapter_name, used by compare_loras
+    # to look up adapters when assembling per-recipe set_adapters calls.
+    stem_to_adapter: dict[str, str] = {}
+
     if use_trained_lora:
         # Be EXPLICIT about which file to load. train.py writes both:
         #   <lora_dir>/pytorch_lora_weights.safetensors  (diffusers flat format)
@@ -382,7 +396,31 @@ def generate(
         adapter_names.append("trained")
         adapter_weights.append(1.0)
         print(f"Loaded trained LoRA: {project.lora_dir}", flush=True)
-    for i, (lora_path, weight) in enumerate(extras):
+
+    # Build the list of unique extra-LoRA paths to load. In normal mode
+    # that's just `extras`. In compare_loras mode it's the union of
+    # every (path, weight) across every recipe — load once, weight-switch
+    # at render time.
+    if compare_loras and lora_recipes:
+        seen_paths: set[Path] = set()
+        all_recipe_loras: list[tuple[Path, float]] = []
+        for _label, recipe in lora_recipes:
+            for path, weight in recipe:
+                p = Path(path)
+                if p in seen_paths:
+                    continue
+                seen_paths.add(p)
+                # Use weight 1.0 here — the per-recipe weight is set later
+                # by set_adapters; the load-time weight is irrelevant.
+                all_recipe_loras.append((p, 1.0))
+        loras_to_load = all_recipe_loras
+        # Re-run the existence + compat pre-flight against the union set
+        # so we fail fast if any recipe references an incompatible LoRA.
+        _preflight_extra_loras(loras_to_load)
+    else:
+        loras_to_load = extras
+
+    for i, (lora_path, weight) in enumerate(loras_to_load):
         # adapter_name has to be a valid identifier — sanitise the stem.
         stem = Path(lora_path).stem
         safe = "".join(c if c.isalnum() else "_" for c in stem) or f"extra_{i}"
@@ -394,11 +432,25 @@ def generate(
             weight_name=Path(lora_path).name,
             adapter_name=safe,
         )
-        adapter_names.append(safe)
-        adapter_weights.append(float(weight))
-        print(f"Loaded extra LoRA: {lora_path} @ weight {weight}", flush=True)
+        stem_to_adapter[stem] = safe
+        # In normal mode we also build the active-adapter list. In
+        # compare_loras mode that list stays empty here — set_adapters
+        # is called per-recipe in the render loop.
+        if not compare_loras:
+            adapter_names.append(safe)
+            adapter_weights.append(float(weight))
+            print(f"Loaded extra LoRA: {lora_path} @ weight {weight}", flush=True)
+        else:
+            print(f"Loaded extra LoRA (compare_loras pool): {lora_path}", flush=True)
 
-    if adapter_names:
+    if compare_loras:
+        # In compare_loras mode the render loop drives set_adapters per
+        # recipe; nothing to activate here yet. The trained LoRA is the
+        # only adapter loaded via the use_trained_lora path above; we
+        # still want it active for any recipe that includes it, so we
+        # cache its name for the recipe-activation step below.
+        pass
+    elif adapter_names:
         pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
     elif not use_trained_lora and not extras:
         # Pure base-model render — log so the user is sure we did what they asked.
@@ -437,7 +489,10 @@ def generate(
     # `precomputed` holds either:
     #   - normal mode: a single embed tuple (pos, pooled, neg, neg_pooled)
     #     OR None when compel isn't installed (raw-string fallback).
-    #   - compare mode: a list of (stack_label, full_prompt, embed_tuple_or_None).
+    #   - compare-stacks mode: a list of (stack_label, full_prompt, embed_tuple_or_None).
+    #   - compare-loras mode: a list of (stack_label, full_prompt, embed_tuple_or_None)
+    #     for the stack subset selected by the caller (just one entry if
+    #     cross-with-stacks is off).
     precomputed: object = None  # populated below
     if compare_stacks:
         from ..prompt_presets import stacks_for_compare
@@ -454,6 +509,28 @@ def generate(
         if compel_active:
             print(
                 f"Compare-stacks: encoded {len(compare_entries)} prompts via compel.",
+                flush=True,
+            )
+    elif compare_loras:
+        # Encode one prompt-embedding per quality-stack in the chosen
+        # subset. If no subset was supplied (or empty), default to a
+        # single empty-prefix entry so every recipe still gets rendered
+        # with the user's already-prepended prompt.
+        from ..prompt_presets import stack_label_to_prefix
+        labels = compare_stacks_subset or ["(current)"]
+        compare_entries = []
+        for stack_label in labels:
+            prefix = stack_label_to_prefix(stack_label) if stack_label != "(current)" else ""
+            full_prompt = f"{prefix}{prompt}"
+            embeds = _encode_long_prompt(pipe, full_prompt, negative_prompt)
+            compare_entries.append((stack_label, full_prompt, embeds))
+        precomputed = compare_entries
+        compel_active = (
+            compare_entries[0][2] is not None if compare_entries else False
+        )
+        if compel_active:
+            print(
+                f"Compare-loras: encoded {len(compare_entries)} stack prompts via compel.",
                 flush=True,
             )
     else:
@@ -508,6 +585,8 @@ def generate(
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     if compare_stacks:
         folder = f"stack_compare_{timestamp}"
+    elif compare_loras:
+        folder = f"lora_compare_{timestamp}"
     elif output_name and output_name.strip():
         safe = "".join(
             c if (c.isalnum() or c in "_-") else "_"
@@ -579,6 +658,151 @@ def generate(
             stack_labels=[lbl for lbl, _, _ in compare_entries],
             compel_active=compel_active,
         )
+        return results
+
+    if compare_loras:
+        # Outer loop: stacks (one or many depending on cross-with-stacks).
+        # Inner loop: recipes (each defines a subset of loaded adapters
+        # plus their weights). Trained LoRA is implicitly active in
+        # every recipe when use_trained_lora=True.
+        compare_entries = precomputed  # type: ignore[assignment]
+        recipes = lora_recipes or []
+        if not recipes:
+            raise ValueError(
+                "compare_loras=True requires lora_recipes to be a non-empty "
+                "list of (label, [(path, weight), ...]) tuples."
+            )
+        shared_seed = seed if seed is not None else random.randint(0, 2**32 - 1)
+        total = len(compare_entries) * len(recipes)
+        print(
+            f"Compare-loras render: {len(recipes)} recipes × "
+            f"{len(compare_entries)} stack(s) = {total} images, "
+            f"shared seed {shared_seed}",
+            flush=True,
+        )
+        rendered_idx = 0
+        # Keep run_info recipe-stack pairing in order so users can map
+        # filenames back to settings. Each entry is a stable index.
+        recipe_stack_pairs: list[tuple[str, str]] = []
+        for stack_idx, (stack_label, full_prompt, embeds) in enumerate(compare_entries):
+            for recipe_idx, (recipe_label, recipe_loras) in enumerate(recipes):
+                # Build the active-adapter set for this recipe. Trained
+                # LoRA is included if the user toggle is on (it's already
+                # loaded under adapter_name "trained" above).
+                active_names: list[str] = []
+                active_weights: list[float] = []
+                if use_trained_lora:
+                    active_names.append("trained")
+                    active_weights.append(1.0)
+                for path, weight in recipe_loras:
+                    stem = Path(path).stem
+                    aname = stem_to_adapter.get(stem)
+                    if aname is None:
+                        # Should never happen — pre-flight should have
+                        # ensured every recipe path is loaded — but log
+                        # and skip rather than crash.
+                        print(
+                            f"WARNING: recipe {recipe_label!r} references "
+                            f"{path} which wasn't pre-loaded; skipping.",
+                            flush=True,
+                        )
+                        continue
+                    active_names.append(aname)
+                    active_weights.append(float(weight))
+
+                if active_names:
+                    pipe.set_adapters(active_names, adapter_weights=active_weights)
+                else:
+                    # "no LoRAs" recipe — set every loaded adapter to
+                    # weight 0 so the render is pure base-model. Calling
+                    # set_adapters([]) is unsupported by some diffusers
+                    # versions; passing all-loaded-with-zero-weight is
+                    # the safe alternative.
+                    every_loaded = list(stem_to_adapter.values())
+                    if use_trained_lora:
+                        every_loaded = ["trained"] + every_loaded
+                    if every_loaded:
+                        pipe.set_adapters(
+                            every_loaded,
+                            adapter_weights=[0.0] * len(every_loaded),
+                        )
+
+                generator = torch.Generator(device="cuda").manual_seed(shared_seed)
+                if embeds is not None:
+                    se, sp, ne, np_ = embeds
+                    image = pipe(
+                        prompt_embeds=se, pooled_prompt_embeds=sp,
+                        negative_prompt_embeds=ne, negative_pooled_prompt_embeds=np_,
+                        num_inference_steps=steps, guidance_scale=guidance,
+                        generator=generator, width=width, height=height,
+                    ).images[0]
+                else:
+                    image = pipe(
+                        prompt=full_prompt, negative_prompt=negative_prompt,
+                        num_inference_steps=steps, guidance_scale=guidance,
+                        generator=generator, width=width, height=height,
+                    ).images[0]
+
+                safe_recipe = "".join(
+                    c if (c.isalnum() or c in "_-") else "_" for c in recipe_label
+                ).strip("_")[:60]
+                safe_stack = "".join(
+                    c if (c.isalnum() or c in "_-") else "_" for c in stack_label
+                ).strip("_")[:40]
+                # Filename layout: NN_<recipe>__<stack>_seed<N>.png
+                # The double underscore separates recipe from stack so
+                # users can ls-sort by recipe across stacks.
+                out_path = out_dir / (
+                    f"{rendered_idx:02d}_{safe_recipe}__{safe_stack}"
+                    f"_seed{shared_seed}.png"
+                )
+                image.save(out_path)
+                print(
+                    f"[{rendered_idx+1}/{total}] {recipe_label} × {stack_label} "
+                    f"→ {out_path.name}",
+                    flush=True,
+                )
+                results.append(out_path)
+                image_seeds.append(shared_seed)
+                recipe_stack_pairs.append((recipe_label, stack_label))
+                rendered_idx += 1
+
+        _write_run_info(
+            out_dir=out_dir, mode="compare_loras",
+            project=project, base_model_path=project.base_model_path,
+            body_or_prompt=prompt, negative=negative_prompt or "",
+            sampler=sampler, steps=steps, guidance=guidance,
+            width=width, height=height,
+            use_trained_lora=use_trained_lora,
+            extras=[],  # extras are recipe-specific; the recipes list is below
+            seeds=image_seeds,
+            # Stuff the recipe×stack pairing into the stack_labels slot
+            # so _write_run_info can emit it without a schema change.
+            stack_labels=[f"{r} × {s}" for r, s in recipe_stack_pairs],
+            compel_active=compel_active,
+        )
+        # Append a recipes block to run_info.txt so users can map the
+        # numbered files back to exact (path, weight) lists.
+        try:
+            recipes_lines = ["", "recipes", "-------"]
+            for r_label, r_loras in recipes:
+                recipes_lines.append(f"  {r_label}:")
+                if not r_loras:
+                    recipes_lines.append("    (no extra LoRAs)")
+                for path, weight in r_loras:
+                    recipes_lines.append(f"    - {Path(path).name}  @ {weight}")
+            recipes_lines.append("")
+            recipes_lines.append("stacks tested")
+            recipes_lines.append("-------------")
+            for lbl in (compare_stacks_subset or ["(current)"]):
+                recipes_lines.append(f"  - {lbl}")
+            with open(out_dir / "run_info.txt", "a", encoding="utf-8") as f:
+                f.write("\n".join(recipes_lines))
+        except OSError as e:
+            print(
+                f"WARNING: couldn't append recipes to run_info.txt ({e})",
+                flush=True,
+            )
         return results
 
     # Normal (non-compare) path. Unpack the single-prompt tuple.

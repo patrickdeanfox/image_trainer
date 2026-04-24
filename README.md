@@ -136,16 +136,42 @@ Start / Resume / Stop (graceful). The Stop button sends SIGINT; training finishe
 
 ### Generate tab (06)
 
-NSFW-focused two-column layout:
+NSFW-focused single-column layout. Top bar: **Generate** · **Compare stacks** · **Compare LoRAs** · **Load run_info…** · **Open outputs** · progress bar.
 
-- **Quality-tag prefix picker** — Pony score_9 (real), Pony score_9 (anime), Illustrious / NoobAI tag stack, bare SDXL realism, none. Auto-prepended to your prompt at generate time.
-- **Prompt template library** — eight pre-written skeletons (portrait soft window light, boudoir bedroom, nude standing, nude explicit POV, outdoor golden hour, selfie phone POV, cosplay, lingerie photoshoot). Each auto-injects the project's trigger word.
-- **Negative prompt presets** — Standard quality, NSFW · uncensor (pushes against censoring artefacts), NSFW · realism push, Anime push.
-- **Sampler picker** — `default / euler / euler_a / dpmpp_2m / dpmpp_2m_karras / unipc`.
+- **Live auto-persist.** Every field (prompt body, negative, sampler, steps, guidance, seed, aspect, LoRA picks + weights, quality stack) saves to `<projects_root>/.user_settings.json` with a 400 ms debounce as you type or click. No save buttons — your last state restores on next launch automatically.
+- **Live prompt builder.** Subject / Scene / Action dropdowns rewrite the prompt body the moment any pick changes. The "Build prompt from picks ▶" button is a manual rebuild for after hand-editing. Subject group includes count (solo / couple / threesome / group) and gender (woman / man / trans woman / trans man / futanari / non-binary) plus the usual hair / eyes / skin / body / breast / makeup axes.
+- **Quality-tag prefix picker** — Pony · photoreal NSFW (default, full 6-tag score opener), Pony · heavy photoreal (anti-anime), Pony · photoreal SFW, Pony · explicit, Pony · score-only minimal, Illustrious / NoobAI XL, RealVis / Juggernaut · photoreal, Photoreal pro (non-Pony) · heavy, Amateur / OnlyFans aesthetic, Lustify / Pony Realism. Auto-prepended at generate time.
+- **Negative prompt presets** — `Pony · minimal (score-only)` is the default per community consensus (over-filtering tends to soften output more than it helps). Heavier presets — Standard quality, NSFW · uncensor, NSFW · photoreal push, NSFW · heavy anti-anime, NSFW · real-skin imperfection, Body-detail correction, Soft sensual — for when you see a specific failure mode.
+- **Smart-augment toggle** below the negative — appends context-aware anti-tags based on the prompt body (e.g. blonde subject → suppress brunette/black hair; outdoor anchor → suppress indoor).
+- **Sampler picker** — `default / euler / euler_a / dpmpp_2m / dpmpp_2m_karras / unipc`. Default is `dpmpp_2m_karras`.
 - **Aspect ratio quick-pick** — five SDXL-friendly buckets (832×1216 portrait → 1216×832 landscape).
-- **LoRA stack** — toggle "Use this project's trained LoRA," then multi-select from a shared library at `~/Apps/image_trainer/projects/shared_loras/` with per-LoRA weight spinboxes (0.0–2.0). Import button copies new `.safetensors` into the library.
+- **LoRA stack** — toggle "Use this project's trained LoRA," then check any subset from your shared library at `~/Apps/image_trainer/projects/shared_loras/`. Each row is one line: checkbox · filename · category badge · ⓘ tooltip (recommended weight range) · weight Spinbox (0.00–2.00, increment 0.05). Default per-category weights are calibrated for the Pony total-weight ceiling (~1.0) — past that, output reliably degrades. Import button copies new `.safetensors` into the library.
+- **Pre-flight LoRA classifier.** Before any generate, every selected LoRA's safetensors header is inspected. Hard-incompatible files (FLUX, SD3, Anima, mixed kohya/ComfyUI) are blocked with a clear message pointing at the specific file — instead of a 50-line PEFT traceback after a 15 s pipe load.
 - **Live preview** of the assembled prompt below the body so you see exactly what gets sent.
-- **Recommendations sidebar** with NSFW-friendly base checkpoints and civitai LoRA categories worth searching for (detail enhancer / anatomy correction / realistic skin / lighting / pose / style).
+- **Recommendations + Photoreal survival guide** collapsed behind ⓘ icons in the LoRA section.
+
+#### Compare workflows
+
+Two A/B/C buttons live next to **Generate**. Both render every variation with a single shared seed so the only thing that changes between outputs is the variable being tested.
+
+- **Compare stacks** — renders one image per quality stack (Pony NSFW recommended, heavy photoreal, Lustify, Amateur/OnlyFans, Illustrious, RealVis, …). Use this to pick which prefix works best for your base + LoRA combo. Output: `outputs/stack_compare_<timestamp>/`.
+- **Compare LoRAs** — opens a modal dialog. Three modes:
+  - **Each checked LoRA solo** — one render per selected LoRA at its current weight, plus a no-LoRAs baseline and an all-together render. Best for "what does each LoRA actually contribute?"
+  - **Weight sweep on one LoRA** — pick a LoRA + a comma-separated list of weights. Other selected LoRAs stay at their current weights every render so you isolate the swept LoRA. Best for "what's the right weight for this one?"
+  - **All combinations (powerset)** — every subset of the checked LoRAs (2^N renders). Warning if total > 32.
+  - Cross-with-stacks toggle (default ON) multi-selects quality stacks; total renders = recipes × stacks. Output: `outputs/lora_compare_<timestamp>/` with each PNG named `NN_<recipe>__<stack>_seed<N>.png` and a `run_info.txt` listing every recipe + stack pairing.
+
+#### Load run_info…
+
+Click **Load run_info…** in the action bar to pick any previous render's `run_info.txt` and re-apply its settings to the Generate tab in one shot:
+
+- prompt body (with the quality-stack opener stripped so the GUI re-prepends the chosen stack cleanly)
+- negative prompt
+- sampler / steps / guidance (CFG)
+- aspect ratio (matched to the closest preset)
+- extra-LoRA list with weights — matched by filename stem against your current `shared_loras/` folder; missing files are silently skipped with a status-line note
+
+Useful for: "I liked output X, give me the same settings to iterate from", or restoring a config after the GUI has been changed.
 
 ### Storage tab (07)
 

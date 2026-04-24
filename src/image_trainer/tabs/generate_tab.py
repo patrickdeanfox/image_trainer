@@ -62,133 +62,162 @@ _LEGACY_PROMPT_TEMPLATES: list[tuple[str, str, str]] = []
 #:   4. Style steering                  (anime if you want photo, vice versa)
 #: The presets below combine these in different proportions for different
 #: workflows.
+
+#: The "photo-only" baseline — tokens that suppress every non-photographic
+#: aesthetic. Per user directive, every preset (except literal "(none)")
+#: must contain these tokens so the model defaults to photographic output.
+#: Compel handles duplicates gracefully, so prepending this to presets
+#: that already contain some of these tokens is cheap and correct.
+_PHOTO_ONLY_BASELINE = (
+    "anime, manga, illustration, drawing, painting, cartoon, sketch, "
+    "lineart, 3d render, cgi, render, animation, animations, artwork, "
+    "digital art, concept art, anime screenshot, hentai art, "
+    "stylized, cel shading, doll"
+)
+
+
+def _with_photo_baseline(body: str) -> str:
+    """Prefix the photo-only baseline to a preset body. Skips the empty
+    string so the literal "(none)" preset stays empty. Otherwise returns
+    "<baseline>, <body>".
+    """
+    if not body:
+        return body
+    return f"{_PHOTO_ONLY_BASELINE}, {body}"
+
+
 NEGATIVE_PRESETS: list[tuple[str, str, str]] = [
     (
         "(none)", "",
-        "No negative prompt. Per Pony's own docs and Civitai community "
-        "consensus, Pony often produces cleaner output with no negative "
-        "at all — negatives can over-filter and soften the result. Worth "
-        "trying once you've got a working prompt before reaching for a "
-        "heavier negative preset.",
+        "No negative prompt. The literal 'no negative' option — every "
+        "OTHER preset starts with the anti-illustration / anti-anime / "
+        "anti-CGI baseline so output stays photographic. Pick this only "
+        "when you want to see what Pony does with truly nothing in the "
+        "negative slot (rarely useful but occasionally diagnostic).",
     ),
     (
         "Pony · minimal (score-only, recommended)",
-        "score_4, score_5, score_6",
-        "The smallest effective Pony negative — just the low-quality "
-        "score buckets. Per community testing, Pony's baseline output is "
-        "already clean; over-filtering with heavy negatives (anime, "
-        "cartoon, plastic, deformed, ... all at once) tends to soften "
-        "the image more than it helps. Start here; add more only if "
-        "you see a SPECIFIC failure mode you need to counter.",
+        _with_photo_baseline("score_4, score_5, score_6"),
+        "The smallest effective Pony negative — score buckets + the "
+        "photo-only baseline (anti-illustration / anti-anime / "
+        "anti-CGI). Default for photoreal NSFW on Pony.",
     ),
     (
         "Standard quality (safe baseline)",
-        "score_4, score_5, score_6, low quality, worst quality, lowres, "
-        "blurry, out of focus, jpeg artifacts, compression artifacts, "
-        "watermark, signature, text, logo, username, error, "
-        "bad anatomy, bad proportions, deformed, mutated, extra limbs, "
-        "extra fingers, fused fingers, malformed hands, missing fingers, "
-        "extra arms, extra legs, disfigured, ugly",
-        "Generic quality + anatomy correction. Includes Pony's "
-        "score_4/5/6 negative anchors (they suppress the low-quality "
-        "training distribution). Safe baseline regardless of base. "
-        "Heavier than 'Pony minimal' — only use if you're consistently "
-        "getting anatomy issues the minimal preset doesn't fix.",
+        _with_photo_baseline(
+            "score_4, score_5, score_6, low quality, worst quality, lowres, "
+            "blurry, out of focus, jpeg artifacts, compression artifacts, "
+            "watermark, signature, text, logo, username, error, "
+            "bad anatomy, bad proportions, deformed, mutated, extra limbs, "
+            "extra fingers, fused fingers, malformed hands, missing fingers, "
+            "extra arms, extra legs, disfigured, ugly"
+        ),
+        "Generic quality + anatomy correction, plus the photo-only "
+        "baseline. Pony's score_4/5/6 negative anchors suppress the "
+        "low-quality training distribution. Safe baseline regardless of "
+        "base. Use when minimal isn't enough for anatomy issues.",
     ),
     (
         "NSFW · uncensor (recommended for explicit)",
-        "score_4, score_5, score_6, censored, uncensored, mosaic, mosaic "
-        "censoring, bar censor, black bar, pixelated, pixelization, "
-        "blurred genitals, novelty censor, convenient censoring, "
-        "covering breasts, covering crotch, hand over breasts, "
-        "clothing covering body, low quality, worst quality, blurry, "
-        "watermark, signature, text, jpeg artifacts, "
-        "bad anatomy, deformed, mutated, extra limbs, extra fingers, "
-        "fused fingers, malformed hands, missing fingers",
-        "Comprehensive NSFW negative — actively pushes against the "
-        "censoring artefacts (mosaic, black bars, 'novelty censor', "
-        "'convenient censoring' tags Pony was trained on) AND the body-"
-        "covering poses the model defaults to when uncertain. Pair with "
-        "Pony explicit NSFW stack for the best uncensored output.",
+        _with_photo_baseline(
+            "score_4, score_5, score_6, censored, uncensored, mosaic, mosaic "
+            "censoring, bar censor, black bar, pixelated, pixelization, "
+            "blurred genitals, novelty censor, convenient censoring, "
+            "covering breasts, covering crotch, hand over breasts, "
+            "clothing covering body, low quality, worst quality, blurry, "
+            "watermark, signature, text, jpeg artifacts, "
+            "bad anatomy, deformed, mutated, extra limbs, extra fingers, "
+            "fused fingers, malformed hands, missing fingers"
+        ),
+        "Comprehensive NSFW negative — pushes against censoring "
+        "artefacts (mosaic, black bars, 'novelty censor', 'convenient "
+        "censoring' tags Pony was trained on) AND the body-covering "
+        "poses the model defaults to when uncertain. Plus the photo-"
+        "only baseline. Pair with Pony explicit NSFW stack.",
     ),
     (
         "NSFW · photoreal push",
-        "score_4, score_5, score_6, anime, manga, illustration, drawing, "
-        "painting, cartoon, sketch, lineart, 3d render, cgi, doll, "
-        "plastic skin, smooth skin, airbrushed, oiled skin, glossy skin, "
-        "matte painting, digital art, pin-up illustration, oversaturated, "
-        "low quality, worst quality, blurry, out of focus, watermark, "
-        "signature, text, jpeg artifacts, bad anatomy, deformed, mutated, "
-        "extra limbs, extra fingers, fused fingers, malformed hands, "
-        "missing fingers, censored, mosaic, bar censor",
-        "Realism push — suppresses every stylised aesthetic so output "
-        "stays photographic. Use with RealVisXL / JuggernautXL / Lustify "
-        "or Pony in photo mode. The 'plastic skin' / 'smooth skin' / "
-        "'oiled skin' / 'glossy skin' negatives are the key anti-Pony-"
-        "default-glamour levers — without them you get the airbrushed-"
-        "3D-doll look regardless of LoRAs. 'pin-up illustration' and "
-        "'matte painting' kill the stylised-pinup drift Pony falls into "
-        "at higher CFG.",
+        _with_photo_baseline(
+            "score_4, score_5, score_6, plastic skin, smooth skin, "
+            "airbrushed, oiled skin, glossy skin, matte painting, "
+            "pin-up illustration, oversaturated, low quality, worst quality, "
+            "blurry, out of focus, watermark, signature, text, jpeg artifacts, "
+            "bad anatomy, deformed, mutated, extra limbs, extra fingers, "
+            "fused fingers, malformed hands, missing fingers, censored, "
+            "mosaic, bar censor"
+        ),
+        "Heavy realism push — photo-only baseline plus anti-glamour "
+        "tokens (plastic skin / smooth skin / oiled / glossy). Use with "
+        "RealVisXL / JuggernautXL / Lustify or Pony in photo mode. "
+        "'plastic skin' / 'oiled skin' are the key anti-Pony-default "
+        "levers — without them you get the airbrushed 3D-doll look "
+        "regardless of LoRAs.",
     ),
     (
         "NSFW · heavy anti-anime (aggressive)",
-        "score_4, score_5, score_6, source_anime, source_cartoon, "
-        "anime, manga, illustration, drawing, painting, cartoon, sketch, "
-        "lineart, cel shading, anime style, cartoonish, stylized, "
-        "3d render, cgi, unreal engine, blender, rendered, "
-        "doll, figurine, mannequin, plastic skin, plastic, smooth skin, "
-        "airbrushed, flawless skin, perfect skin, porcelain skin, "
-        "oversaturated, vivid colors, highly saturated, "
-        "big eyes, large eyes, anime eyes, shiny eyes, "
-        "low quality, worst quality, lowres, blurry, watermark, "
-        "signature, text, bad anatomy, deformed, extra limbs, extra "
-        "fingers, fused fingers, malformed hands, censored, mosaic",
+        _with_photo_baseline(
+            "score_4, score_5, score_6, source_anime, source_cartoon, "
+            "anime style, cartoonish, "
+            "unreal engine, blender, rendered, "
+            "figurine, mannequin, plastic skin, plastic, smooth skin, "
+            "airbrushed, flawless skin, perfect skin, porcelain skin, "
+            "oversaturated, vivid colors, highly saturated, "
+            "big eyes, large eyes, anime eyes, shiny eyes, "
+            "low quality, worst quality, lowres, blurry, watermark, "
+            "signature, text, bad anatomy, deformed, extra limbs, extra "
+            "fingers, fused fingers, malformed hands, censored, mosaic"
+        ),
         "Maximum anti-anime / anti-stylised push. Use when the standard "
         "photoreal push still gives you illustrated output — this one "
         "also kills the stylised 3D-render look and Pony's characteristic "
-        "large-eye anime-face proportions. Pair with 'Pony · heavy "
-        "photoreal' stack and the 'Photoreal · heavy anti-anime anchor' "
-        "template. Heavier token budget but worth it on vanilla Pony.",
+        "large-eye anime-face proportions. Heavier token budget but worth "
+        "it on vanilla Pony.",
     ),
     (
         "NSFW · real-skin imperfection",
-        "score_4, score_5, score_6, airbrushed, photoshopped, retouched, "
-        "perfect skin, porcelain skin, plastic skin, smooth skin, "
-        "flawless skin, glossy skin, wet-look skin, doll skin, "
-        "oversaturated, vivid, hdr, "
-        "anime, illustration, drawing, cartoon, 3d render, cgi, "
-        "low quality, blurry, watermark, signature, bad anatomy, "
-        "deformed, extra limbs, extra fingers, fused fingers",
+        _with_photo_baseline(
+            "score_4, score_5, score_6, airbrushed, photoshopped, retouched, "
+            "perfect skin, porcelain skin, plastic skin, smooth skin, "
+            "flawless skin, glossy skin, wet-look skin, doll skin, "
+            "oversaturated, vivid, hdr, "
+            "low quality, blurry, watermark, signature, bad anatomy, "
+            "deformed, extra limbs, extra fingers, fused fingers"
+        ),
         "Targets the 'plastic doll' skin look specifically — Pony's "
-        "biggest tell when it's trying to look photoreal but isn't. Adds "
-        "'airbrushed / photoshopped / retouched / glossy' to the "
-        "negative so output gets actual pore texture + natural skin "
-        "variation instead of Instagram-filter perfection.",
+        "biggest tell when it's trying to look photoreal but isn't. "
+        "Photo-only baseline plus airbrushed/photoshopped/retouched/"
+        "glossy negatives so output gets actual pore texture + natural "
+        "skin variation instead of Instagram-filter perfection.",
     ),
     (
         "Body-detail correction (pair with anything)",
-        "score_4, score_5, score_6, bad anatomy, bad proportions, "
-        "deformed body, mutated, extra limbs, extra arms, extra legs, "
-        "extra hands, extra feet, extra fingers, fused fingers, "
-        "malformed hands, missing fingers, missing limbs, asymmetrical "
-        "eyes, cross-eyed, deformed face, mutated face, ugly face, "
-        "fat rolls, unnatural body shape, weird torso, broken neck, "
-        "long neck, short legs, short arms, deformed breasts, "
-        "asymmetrical breasts, low quality, blurry, watermark",
-        "Aggressive anatomy fix. Use when basic negatives aren't enough "
-        "and you keep seeing extra limbs / weird hands. Combine with an "
-        "anatomy-correction LoRA from civitai for best results.",
+        _with_photo_baseline(
+            "score_4, score_5, score_6, bad anatomy, bad proportions, "
+            "deformed body, mutated, extra limbs, extra arms, extra legs, "
+            "extra hands, extra feet, extra fingers, fused fingers, "
+            "malformed hands, missing fingers, missing limbs, asymmetrical "
+            "eyes, cross-eyed, deformed face, mutated face, ugly face, "
+            "fat rolls, unnatural body shape, weird torso, broken neck, "
+            "long neck, short legs, short arms, deformed breasts, "
+            "asymmetrical breasts, low quality, blurry, watermark"
+        ),
+        "Aggressive anatomy fix plus the photo-only baseline. Use when "
+        "basic negatives aren't enough and you keep seeing extra limbs "
+        "/ weird hands. Combine with an anatomy-correction LoRA from "
+        "civitai for best results.",
     ),
     (
         "Soft sensual (artistic, not explicit)",
-        "score_4, score_5, score_6, hardcore, explicit, graphic, "
-        "penetration, cum, ejaculation, semen, low quality, worst "
-        "quality, blurry, watermark, signature, bad anatomy, deformed, "
-        "extra limbs, extra fingers, fused fingers, malformed hands",
+        _with_photo_baseline(
+            "score_4, score_5, score_6, hardcore, explicit, graphic, "
+            "penetration, cum, ejaculation, semen, low quality, worst "
+            "quality, blurry, watermark, signature, bad anatomy, deformed, "
+            "extra limbs, extra fingers, fused fingers, malformed hands"
+        ),
         "For sensual / artistic nude work that should NOT be explicit. "
-        "Suppresses the explicit-content vocabulary while keeping the "
-        "quality + anatomy negatives. Use with rating_safe / "
-        "rating_questionable on the prompt side.",
+        "Suppresses explicit vocabulary while keeping quality + anatomy "
+        "negatives, plus the photo-only baseline. Use with rating_safe "
+        "/ rating_questionable on the prompt side.",
     ),
 ]
 
@@ -649,6 +678,469 @@ _LORA_CATEGORIES: list[tuple[list[str], str, str, str]] = [
 
 # ---------- Builder ----------
 
+def _parse_run_info_text(text: str) -> dict:
+    """Parse a `run_info.txt` (as written by `_write_run_info` in
+    pipeline/generate.py) into a dict of settings the GUI can apply.
+
+    Returns a dict with any subset of keys:
+      - prompt   : str (multiline body without quality-stack prefix)
+      - negative : str
+      - sampler  : str (e.g. "dpmpp_2m_karras")
+      - steps    : int
+      - guidance : float
+      - width    : int
+      - height   : int
+      - extra_loras : list[(path_str, weight_float)]
+
+    Missing fields are simply absent from the dict — caller decides
+    whether to treat absence as 'leave unchanged'.
+
+    Tolerant of minor format drift: the parser only looks for specific
+    line prefixes / section headers and ignores everything else.
+    """
+    result: dict = {}
+    lines = text.splitlines()
+
+    # Pass 1: scan top-of-file key:value pairs and the LoRA list block.
+    in_lora_block = False
+    extra_loras: list[tuple[str, float]] = []
+    for ln in lines:
+        s = ln.rstrip()
+        # Stop the LoRA block at the first blank line OR a new key line.
+        if in_lora_block:
+            if not s.strip() or ":" in s.split("@")[0].split(":", 1)[0] and not s.lstrip().startswith("-"):
+                in_lora_block = False
+            else:
+                # Match "  - <abs path>  @ weight <float>"
+                stripped = s.strip()
+                if stripped.startswith("-"):
+                    body = stripped[1:].strip()
+                    if "@" in body:
+                        path_str, _, tail = body.rpartition("@")
+                        path_str = path_str.strip()
+                        # Tail looks like "weight 0.45"
+                        toks = tail.split()
+                        for t in toks:
+                            try:
+                                extra_loras.append((path_str, float(t)))
+                                break
+                            except ValueError:
+                                continue
+                    continue
+                # If we hit something non-LoRA in the block, fall through
+                in_lora_block = False
+
+        if not in_lora_block:
+            if s.startswith("sampler"):
+                _, _, v = s.partition(":")
+                if v.strip():
+                    result["sampler"] = v.strip()
+            elif s.startswith("steps"):
+                _, _, v = s.partition(":")
+                try:
+                    result["steps"] = int(v.strip())
+                except ValueError:
+                    pass
+            elif s.startswith("guidance"):
+                _, _, v = s.partition(":")
+                try:
+                    result["guidance"] = float(v.strip())
+                except ValueError:
+                    pass
+            elif s.startswith("dimensions"):
+                _, _, v = s.partition(":")
+                # "1024 x 1024" or "896 x 1152"
+                parts = [p.strip() for p in v.lower().split("x")]
+                if len(parts) == 2:
+                    try:
+                        result["width"] = int(parts[0])
+                        result["height"] = int(parts[1])
+                    except ValueError:
+                        pass
+            elif s.startswith("extra LoRAs"):
+                # The header line is either:
+                #   "extra LoRAs       : (none)"   → empty list
+                #   "extra LoRAs       :"          → list follows
+                _, _, v = s.partition(":")
+                if v.strip().startswith("(none"):
+                    pass  # leave extra_loras empty
+                else:
+                    in_lora_block = True
+
+    if extra_loras:
+        result["extra_loras"] = extra_loras
+
+    # Pass 2: prompt / negative blocks (between header underline and the
+    # next blank line + new section header). Walk the lines looking for
+    # "prompt" then "------" then collect until the next blank-line +
+    # non-section pattern.
+    def _grab_block(label: str) -> str | None:
+        for i, line in enumerate(lines):
+            if line.strip() == label:
+                if i + 1 < len(lines) and set(lines[i + 1].strip()) == {"-"}:
+                    j = i + 2
+                    out: list[str] = []
+                    while j < len(lines):
+                        nxt = lines[j]
+                        # Section break: blank line followed by a known
+                        # section header on the next non-blank line.
+                        if not nxt.strip():
+                            # Peek: if the following non-blank line is
+                            # a section header ("negative" / "outputs" /
+                            # "stacks tested" / "recipes"), stop.
+                            k = j + 1
+                            while k < len(lines) and not lines[k].strip():
+                                k += 1
+                            if k >= len(lines) or lines[k].strip() in {
+                                "prompt", "negative", "outputs",
+                                "stacks tested", "recipes", "run_info",
+                            }:
+                                break
+                        out.append(nxt)
+                        j += 1
+                    # Trim trailing blanks.
+                    while out and not out[-1].strip():
+                        out.pop()
+                    return "\n".join(out).strip()
+        return None
+
+    body = _grab_block("prompt")
+    neg = _grab_block("negative")
+    if body is not None:
+        # Strip any leading quality-stack opener so the body slot in the
+        # GUI gets the clean text the user typed. Heuristic: if the body
+        # starts with `score_X` tokens, drop everything up to and
+        # including the first ", " that follows the last `score_` /
+        # `source_` / `rating_` / `professional photography` token.
+        result["prompt"] = _strip_known_stack_prefixes(body)
+    if neg is not None and neg.lower() != "(none)":
+        result["negative"] = neg
+
+    return result
+
+
+def _strip_known_stack_prefixes(prompt: str) -> str:
+    """Drop a Pony / SDXL quality-stack opener from the front of a prompt.
+
+    The GUI re-prepends the chosen stack at generate time, so storing
+    the body WITHOUT the opener lets the user freely switch stacks
+    without doubling tokens. Matches the openers in QUALITY_STACKS
+    (score_X, source_real, rating_*, photo, photorealistic, raw photo,
+    real photograph, 35mm film, skin pores, subsurface scattering,
+    professional photography, candid snapshot, amateur photograph,
+    natural skin, no makeup filter, real woman).
+
+    Conservative: only strips contiguous opener tokens. Anything past
+    the first non-opener token stays as-is.
+    """
+    OPENERS = {
+        "score_9", "score_8_up", "score_7_up", "score_6_up",
+        "score_5_up", "score_4_up", "source_real", "rating_explicit",
+        "rating_safe", "rating_questionable", "photo",
+        "photorealistic", "raw photo", "real photograph",
+        "35mm film", "skin pores", "subsurface scattering",
+        "professional photography", "candid snapshot",
+        "amateur photograph", "natural skin", "no makeup filter",
+        "real woman",
+    }
+    parts = [p.strip() for p in prompt.split(",")]
+    i = 0
+    while i < len(parts) and parts[i].lower() in OPENERS:
+        i += 1
+    if i == 0:
+        return prompt
+    return ", ".join(parts[i:]).strip()
+
+
+class _LoraCompareDialog:
+    """Modal dialog for the 'Compare LoRA recipes' feature.
+
+    The dialog asks three questions:
+      1. **Recipe set** — radio between three preset modes:
+         "each_solo"  : every checked LoRA active alone (plus a no-LoRAs
+                        baseline and an all-together render).
+         "weight_sweep": one chosen LoRA, several weights; other checked
+                        LoRAs stay at their current weight every render.
+         "powerset"   : every subset (2^N renders for N checked LoRAs).
+      2. **Trained LoRA in every recipe** — checkbox. When ticked, the
+         project's trained likeness LoRA is added to every recipe at
+         weight 1.0 so the subject identity stays consistent while the
+         only thing varying is the style stack.
+      3. **Cross with quality stacks** — checkbox + multiselect.
+         When ticked, the recipe list is cross-producted with the
+         picked stack labels. Total renders = recipes × stacks.
+
+    Returns ``(recipes, stack_labels, use_trained_in_every)`` on Compare,
+    or ``None`` on Cancel. ``recipes`` is a list of (label, [(path, weight), ...]).
+    """
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        checked_loras: list[tuple[Path, float]],
+        use_trained: bool,
+        current_stack: str,
+    ) -> None:
+        self.parent = parent
+        self.checked_loras = checked_loras  # [(path, weight), ...]
+        self.use_trained = use_trained
+        self.current_stack = current_stack
+        self.result: object = None  # populated on OK; None on cancel
+
+    def show(self) -> object:
+        from ..prompt_presets import QUALITY_STACKS
+
+        top = tk.Toplevel(self.parent)
+        top.title("Compare LoRA recipes")
+        top.transient(self.parent)
+        top.resizable(False, False)
+        # Modal: block parent until dialog resolves.
+        top.grab_set()
+
+        PAD = gui_theme.PAD
+        body = ttk.Frame(top, padding=PAD)
+        body.pack(fill="both", expand=True)
+
+        # ---- Mode picker ----
+        mode_var = tk.StringVar(value="each_solo")
+        ttk.Label(
+            body, text="Recipe set:", style="Mono.TLabel",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 2))
+        ttk.Radiobutton(
+            body, text="Each checked LoRA solo (+ all-together + no-LoRAs baseline)",
+            variable=mode_var, value="each_solo",
+        ).grid(row=1, column=0, columnspan=3, sticky="w")
+
+        # Weight-sweep row needs sub-controls (LoRA picklist + weights).
+        sweep_row = ttk.Frame(body)
+        sweep_row.grid(row=2, column=0, columnspan=3, sticky="we")
+        ttk.Radiobutton(
+            sweep_row, text="Weight sweep on:",
+            variable=mode_var, value="weight_sweep",
+        ).pack(side="left")
+        sweep_lora_var = tk.StringVar(
+            value=(self.checked_loras[0][0].stem if self.checked_loras else "")
+        )
+        sweep_lora_combo = ttk.Combobox(
+            sweep_row,
+            textvariable=sweep_lora_var,
+            values=[p.stem for p, _ in self.checked_loras],
+            state="readonly", width=28,
+        )
+        sweep_lora_combo.pack(side="left", padx=(4, 8))
+        ttk.Label(sweep_row, text="weights:", style="Status.TLabel").pack(side="left")
+        sweep_weights_var = tk.StringVar(value="0.0, 0.25, 0.5, 0.75, 1.0")
+        ttk.Entry(
+            sweep_row, textvariable=sweep_weights_var, width=22,
+        ).pack(side="left", padx=(4, 0))
+
+        ttk.Radiobutton(
+            body, text="All combinations (powerset of checked LoRAs)",
+            variable=mode_var, value="powerset",
+        ).grid(row=3, column=0, columnspan=3, sticky="w")
+
+        # ---- Trained-LoRA checkbox ----
+        trained_in_every_var = tk.BooleanVar(value=self.use_trained)
+        ttk.Checkbutton(
+            body, variable=trained_in_every_var,
+            text="Include trained likeness LoRA in every recipe (recommended)",
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(PAD, 2))
+
+        # ---- Cross-with-stacks ----
+        cross_var = tk.BooleanVar(value=True)
+        cross_cb = ttk.Checkbutton(
+            body, variable=cross_var,
+            text="Also vary the quality stack",
+        )
+        cross_cb.grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 2))
+
+        stacks_row = ttk.Frame(body)
+        stacks_row.grid(row=6, column=0, columnspan=3, sticky="we")
+        ttk.Label(stacks_row, text="Stacks to test:", style="Status.TLabel").pack(
+            anchor="w"
+        )
+        # Multi-select listbox of stack labels — exclude "(none)".
+        stack_labels = [lbl for lbl, prefix, _ in QUALITY_STACKS if prefix]
+        stacks_list = tk.Listbox(
+            stacks_row,
+            selectmode="multiple",
+            height=min(7, len(stack_labels)),
+            exportselection=False,
+        )
+        for lbl in stack_labels:
+            stacks_list.insert("end", lbl)
+        # Pre-select the user's currently-active stack so the dialog opens
+        # in a sensible state if they just want to test the current stack.
+        if self.current_stack in stack_labels:
+            stacks_list.selection_set(stack_labels.index(self.current_stack))
+        stacks_list.pack(fill="x", padx=(20, 0))
+
+        # ---- Image-count + estimate (live) ----
+        count_var = tk.StringVar(value="")
+        ttk.Label(
+            body, textvariable=count_var, style="Mono.TLabel",
+        ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(PAD, 0))
+
+        def _recompute() -> None:
+            try:
+                n_recipes = len(self._build_recipes(
+                    mode_var.get(),
+                    sweep_lora_var.get(),
+                    sweep_weights_var.get(),
+                ))
+            except Exception:
+                n_recipes = 0
+            cross_on = cross_var.get()
+            if cross_on:
+                sel = [stacks_list.get(i) for i in stacks_list.curselection()]
+                n_stacks = max(1, len(sel))
+            else:
+                n_stacks = 1
+            total = n_recipes * n_stacks
+            secs = total * 15  # rough per-image estimate at 1024 / 28 steps
+            count_var.set(
+                f"Total images: {total}  ({n_recipes} recipes × "
+                f"{n_stacks} stack{'s' if n_stacks != 1 else ''})"
+                f"   est. ~{secs}s"
+            )
+
+        # Re-compute the count every time anything relevant changes.
+        for var in (mode_var, sweep_lora_var, sweep_weights_var, cross_var):
+            var.trace_add("write", lambda *_: _recompute())
+        stacks_list.bind("<<ListboxSelect>>", lambda _e: _recompute())
+        _recompute()
+
+        # ---- buttons ----
+        btn_row = ttk.Frame(body)
+        btn_row.grid(row=8, column=0, columnspan=3, sticky="e", pady=(PAD, 0))
+
+        def _on_ok() -> None:
+            try:
+                recipes = self._build_recipes(
+                    mode_var.get(),
+                    sweep_lora_var.get(),
+                    sweep_weights_var.get(),
+                )
+            except ValueError as e:
+                messagebox.showerror("Bad recipe input", str(e), parent=top)
+                return
+            if not recipes:
+                messagebox.showerror(
+                    "No recipes",
+                    "The selected mode produced zero recipes. Tick more "
+                    "LoRAs or pick a different mode.",
+                    parent=top,
+                )
+                return
+            if cross_var.get():
+                sel_idx = stacks_list.curselection()
+                stacks_chosen = [stacks_list.get(i) for i in sel_idx]
+                if not stacks_chosen:
+                    messagebox.showerror(
+                        "No stacks selected",
+                        "Tick at least one quality stack in the list, "
+                        "or untick 'Also vary the quality stack' to use "
+                        "your current stack only.",
+                        parent=top,
+                    )
+                    return
+            else:
+                stacks_chosen = [self.current_stack]
+            # Hard ceiling — refuse runaway runs.
+            total = len(recipes) * max(1, len(stacks_chosen))
+            if total > 32:
+                ok = messagebox.askokcancel(
+                    "Large compare run",
+                    f"This will render {total} images "
+                    f"(~{total * 15} seconds). Continue?",
+                    parent=top,
+                )
+                if not ok:
+                    return
+            self.result = (
+                recipes, stacks_chosen, bool(trained_in_every_var.get()),
+            )
+            top.destroy()
+
+        ttk.Button(
+            btn_row, text="Cancel", style="Ghost.TButton",
+            command=top.destroy,
+        ).pack(side="right", padx=(PAD // 2, 0))
+        ttk.Button(
+            btn_row, text="Compare ▶", style="Primary.TButton",
+            command=_on_ok,
+        ).pack(side="right")
+
+        # Wait until the dialog closes (modal blocking).
+        self.parent.wait_window(top)
+        return self.result
+
+    def _build_recipes(
+        self, mode: str, sweep_stem: str, sweep_weights_csv: str,
+    ) -> list[tuple[str, list[tuple[Path, float]]]]:
+        """Translate (mode + state) into the list of recipes.
+
+        Each recipe is ``(label, [(path, weight), ...])``. The trained
+        LoRA is NOT included here — it's handled at engine-time by
+        the ``use_trained_in_every`` flag.
+        """
+        if mode == "each_solo":
+            recipes: list[tuple[str, list[tuple[Path, float]]]] = []
+            recipes.append(("no_extra_loras", []))
+            for path, weight in self.checked_loras:
+                recipes.append((f"{path.stem}_only_{weight}", [(path, weight)]))
+            if len(self.checked_loras) > 1:
+                recipes.append(("all_together", list(self.checked_loras)))
+            return recipes
+
+        if mode == "weight_sweep":
+            sweep_path = next(
+                (p for p, _ in self.checked_loras if p.stem == sweep_stem),
+                None,
+            )
+            if sweep_path is None:
+                raise ValueError(
+                    "Pick a LoRA from the dropdown to sweep weights for."
+                )
+            try:
+                weights = [
+                    float(w.strip()) for w in sweep_weights_csv.split(",")
+                    if w.strip()
+                ]
+            except ValueError:
+                raise ValueError(
+                    f"Couldn't parse weight list {sweep_weights_csv!r}. "
+                    "Use comma-separated floats: 0.0, 0.25, 0.5, 0.75, 1.0"
+                )
+            if not weights:
+                raise ValueError("Need at least one weight to sweep.")
+            other_loras = [
+                (p, w) for p, w in self.checked_loras if p != sweep_path
+            ]
+            return [
+                (
+                    f"{sweep_stem}_at_{w:.2f}",
+                    [(sweep_path, w)] + other_loras,
+                )
+                for w in weights
+            ]
+
+        if mode == "powerset":
+            from itertools import combinations
+            recipes = []
+            n = len(self.checked_loras)
+            for k in range(0, n + 1):
+                for combo in combinations(self.checked_loras, k):
+                    if not combo:
+                        recipes.append(("no_extra_loras", []))
+                    else:
+                        label = "+".join(p.stem for p, _ in combo)[:60]
+                        recipes.append((label, list(combo)))
+            return recipes
+
+        raise ValueError(f"Unknown mode {mode!r}")
+
+
 def build(gui: "TrainerGUI") -> None:
     PAD = gui_theme.PAD
     f = gui.tab_generate
@@ -709,27 +1201,40 @@ def build(gui: "TrainerGUI") -> None:
     # Generate, and have to scroll back down to see anything happening.
     action_bar = ttk.Frame(f)
     action_bar.grid(row=1, column=0, sticky="we", pady=(0, PAD))
-    action_bar.columnconfigure(3, weight=1)
+    # Progress bar lives in column 5 (after Generate / Compare stacks /
+    # Compare LoRAs / Load run_info / Open outputs), so that's the column
+    # that absorbs leftover horizontal space.
+    action_bar.columnconfigure(5, weight=1)
     state.generate_btn = ttk.Button(
         action_bar, text="Generate", style="Primary.TButton",
         command=state._on_generate,
     )
     state.generate_btn.grid(row=0, column=0, sticky="w")
     state.compare_btn = ttk.Button(
-        action_bar, text="Compare across all stacks",
+        action_bar, text="Compare stacks",
         style="Ghost.TButton",
         command=state._on_compare_stacks,
     )
     state.compare_btn.grid(row=0, column=1, sticky="w", padx=(PAD // 2, 0))
+    state.compare_loras_btn = ttk.Button(
+        action_bar, text="Compare LoRAs",
+        style="Ghost.TButton",
+        command=state._on_compare_loras,
+    )
+    state.compare_loras_btn.grid(row=0, column=2, sticky="w", padx=(PAD // 2, 0))
+    ttk.Button(
+        action_bar, text="Load run_info…", style="Ghost.TButton",
+        command=state._on_load_run_info,
+    ).grid(row=0, column=3, sticky="w", padx=(PAD // 2, 0))
     ttk.Button(
         action_bar, text="Open outputs", style="Ghost.TButton",
         command=state._open_outputs,
-    ).grid(row=0, column=2, sticky="w", padx=(PAD // 2, 0))
+    ).grid(row=0, column=4, sticky="w", padx=(PAD // 2, 0))
     state.progress = ttk.Progressbar(
         action_bar, mode="determinate",
         style="Trainer.Horizontal.TProgressbar",
     )
-    state.progress.grid(row=0, column=3, sticky="we", padx=(PAD, 0))
+    state.progress.grid(row=0, column=5, sticky="we", padx=(PAD, 0))
     state.progress_status_var = tk.StringVar(value="idle")
     ttk.Label(
         f, textvariable=state.progress_status_var, style="Status.TLabel",
@@ -1508,13 +2013,17 @@ class _GenerateState:
             weight_var = prior.get("weight_var") or tk.StringVar(value=default_weight)
 
             # ── card ───────────────────────────────────────────────────────
-            # Single-row layout (previously 3 rows per LoRA — ~75% vertical
-            # space reduction for the picker when the user has many LoRAs).
-            # Columns: [0]checkbox  [1]filename  [2]category badge
-            # [3]info-icon  [4]slider (stretches)  [5]value label.
+            # Single-row layout. Columns: [0]checkbox [1]filename
+            # [2]category badge [3]info-icon [4]filler [5]weight Spinbox.
+            #
+            # Slider replaced by Spinbox per user request — sliders made it
+            # hard to set precise weights (e.g. exactly 0.35), and the
+            # Spinbox gives both ↑↓ buttons for nudging and direct typing.
+            # Range 0.00–2.00, increment 0.05 — fine enough for any
+            # practical LoRA-mixing workflow.
             card = ttk.Frame(self.lora_table)
             card.pack(fill="x", pady=1)
-            card.columnconfigure(4, weight=1)  # slider takes leftover space
+            card.columnconfigure(4, weight=1)  # absorb slack between badge + spinbox
 
             ttk.Checkbutton(
                 card, variable=selected,
@@ -1543,36 +2052,28 @@ class _GenerateState:
                 f"focus, over-baked LoRA artefacts).",
             ).grid(row=0, column=3, sticky="w", padx=(0, 6))
 
-            # DoubleVar drives the Scale; weight_var (StringVar) drives
-            # the display label and is what selected_extras() reads.
+            # Normalise the saved string to a 2-decimal form so the
+            # Spinbox starts in a clean state. Tolerate junk values from
+            # historical saves by falling back to the category default.
             try:
-                init_val = float(weight_var.get())
+                weight_var.set(f"{float(weight_var.get()):.2f}")
             except ValueError:
-                init_val = float(default_weight)
-            scale_var = tk.DoubleVar(value=init_val)
+                weight_var.set(f"{float(default_weight):.2f}")
 
-            def _make_cmd(wvar: tk.StringVar) -> object:
-                def _cmd(val: str) -> None:
-                    wvar.set(f"{float(val):.2f}")
-                return _cmd
-
-            ttk.Scale(
+            ttk.Spinbox(
                 card,
-                from_=0.0, to=2.0, orient="horizontal",
-                variable=scale_var,
-                command=_make_cmd(weight_var),
-            ).grid(row=0, column=4, sticky="we", padx=(0, 6))
-
-            ttk.Label(
-                card, textvariable=weight_var,
-                style="Mono.TLabel", width=5, anchor="e",
-            ).grid(row=0, column=5, sticky="e")
+                from_=0.0, to=2.0, increment=0.05,
+                textvariable=weight_var,
+                width=6,
+                format="%.2f",
+                wrap=False,
+                justify="right",
+            ).grid(row=0, column=5, sticky="e", padx=(0, 2))
 
             new_rows[path.stem] = {
                 "path": path,
                 "selected_var": selected,
                 "weight_var": weight_var,
-                "scale_var": scale_var,
             }
 
         self.lora_rows = new_rows
@@ -1930,14 +2431,13 @@ class _GenerateState:
                         continue  # file deleted since last save — skip.
                     row["selected_var"].set(True)
                     if isinstance(weight, str):
-                        row["weight_var"].set(weight)
-                        # Keep the slider in sync with the label.
-                        scale_var = row.get("scale_var")
-                        if scale_var is not None:
-                            try:
-                                scale_var.set(float(weight))
-                            except ValueError:
-                                pass
+                        # Normalise to 2-decimal form so Spinbox displays
+                        # cleanly (e.g. saved "0.35" stays "0.35", but a
+                        # raw "0.350000" gets tidied to "0.35").
+                        try:
+                            row["weight_var"].set(f"{float(weight):.2f}")
+                        except ValueError:
+                            row["weight_var"].set(weight)
                 self._update_active_count()
         finally:
             self._restoring = False
@@ -2280,6 +2780,122 @@ class _GenerateState:
             return
         gui_helpers.open_folder(self.gui.current_project.outputs_dir)
 
+    # ---- run_info.txt loader ----
+
+    def _on_load_run_info(self) -> None:
+        """File-picker → parse a previous run's run_info.txt → apply
+        every settable field to the current Generate tab.
+
+        Matches whatever a previous render saved next to its PNGs:
+        sampler, steps, guidance (CFG), dimensions, prompt body,
+        negative prompt, and the extra-LoRA list with weights. The
+        LoRA list is matched by filename stem against the current
+        shared_loras/ folder; missing files are silently skipped.
+
+        Useful for: 'I liked output X — give me the same settings to
+        iterate from' workflow, or restoring a config after the GUI
+        has been changed.
+        """
+        path = filedialog.askopenfilename(
+            title="Pick a run_info.txt to load settings from",
+            filetypes=[("run_info", "run_info*.txt"), ("Text files", "*.txt"),
+                       ("All files", "*.*")],
+            initialdir=str(
+                self.gui.current_project.outputs_dir
+                if self.gui.current_project else Path.home()
+            ),
+        )
+        if not path:
+            return
+        try:
+            self._apply_run_info_file(Path(path))
+        except Exception as e:
+            messagebox.showerror(
+                "Couldn't load run_info",
+                f"Failed to parse {Path(path).name}:\n\n{e}",
+            )
+
+    def _apply_run_info_file(self, p: Path) -> None:
+        """Parse a run_info.txt and apply its settings.
+
+        Format reminder (from `_write_run_info` in pipeline/generate.py):
+            sampler           : <name>
+            steps             : <int>
+            guidance (CFG)    : <float>
+            dimensions        : <W> x <H>
+            extra LoRAs       :
+              - <abs path>  @ weight <float>
+              - ...
+
+            prompt
+            ------
+            <multiline prompt>
+
+            negative
+            --------
+            <multiline negative>
+        """
+        text = p.read_text(encoding="utf-8")
+        info = _parse_run_info_text(text)
+
+        # ---- Temporarily suppress auto-rebuild + auto-save while we
+        # bulk-apply, then refresh once at the end.
+        self._restoring = True
+        try:
+            if info.get("prompt") is not None:
+                self.prompt_text.delete("1.0", "end")
+                self.prompt_text.insert("1.0", info["prompt"])
+            if info.get("negative") is not None:
+                self.gui.negative_var.set(info["negative"])
+            if info.get("sampler"):
+                self.gui.sampler_var.set(info["sampler"])
+            if info.get("steps"):
+                self.gui.steps_var.set(str(info["steps"]))
+            if info.get("guidance"):
+                self.gui.guidance_var.set(str(info["guidance"]))
+            # Match width × height to the closest aspect-ratio preset.
+            if info.get("width") and info.get("height"):
+                w, h = info["width"], info["height"]
+                for label, lw, lh in ASPECT_RATIOS:
+                    if lw == w and lh == h:
+                        self.gui.aspect_var.set(label)
+                        break
+
+            # LoRA stack: match by filename stem against currently-known
+            # rows. Untick everything first so missing files = unticked.
+            for row in self.lora_rows.values():
+                row["selected_var"].set(False)
+            applied: list[str] = []
+            missing: list[str] = []
+            for path_str, weight in info.get("extra_loras") or []:
+                stem = Path(path_str).stem
+                row = self.lora_rows.get(stem)
+                if row is None:
+                    missing.append(stem)
+                    continue
+                row["selected_var"].set(True)
+                try:
+                    row["weight_var"].set(f"{float(weight):.2f}")
+                except (TypeError, ValueError):
+                    row["weight_var"].set(str(weight))
+                applied.append(stem)
+
+            self._update_active_count()
+        finally:
+            self._restoring = False
+
+        # Force a single refresh + save AFTER the bulk apply completes.
+        self._refresh_assembled()
+        self._schedule_persist()
+
+        msg_lines = [f"Loaded run_info: {p.name}"]
+        if applied:
+            msg_lines.append(f"  Applied LoRAs: {', '.join(applied)}")
+        if missing:
+            msg_lines.append(f"  Skipped (not in shared_loras/): {', '.join(missing)}")
+        self.gui.log_queue.put("\n".join(msg_lines) + "\n")
+        self.gui.status_var.set("run_info applied")
+
     def _on_compare_stacks(self) -> None:
         """Render ONE image per defined quality stack with the same body
         + seed so the user can A/B/C the stacks side-by-side.
@@ -2354,6 +2970,120 @@ class _GenerateState:
             args += ["--extra-lora", f"{path}:{weight}"]
 
         self._begin_run(n_stacks)
+        self.gui.on_next_exit = self._end_run
+        self.gui.spawn(args)
+
+    # ---- Compare LoRA recipes ----
+
+    def _on_compare_loras(self) -> None:
+        """Open the LoRA-compare dialog and run the chosen comparison.
+
+        Renders one image per (recipe × stack) combo with a shared seed.
+        Recipes are derived from the dialog's mode pick:
+        - "each_solo"  : each currently-checked LoRA active alone, plus
+                         a no-LoRAs baseline and an all-together render.
+        - "weight_sweep": one LoRA, multiple weights, others held fixed.
+        - "powerset"   : every subset of currently-checked LoRAs.
+
+        Optionally cross-products with a user-selected stack subset so
+        you can see how each recipe interacts with each stack prefix.
+        """
+        project = self.gui.require_project()
+        if not project:
+            return
+        self.gui.save_settings_silent()
+
+        body = self.prompt_text.get("1.0", "end").strip()
+        if not body:
+            messagebox.showerror(
+                "Prompt is empty",
+                "Type a prompt body before running compare-LoRAs. The "
+                "comparison varies the LoRA stack and (optionally) the "
+                "quality stack — your body has to describe the subject.",
+            )
+            return
+
+        checked = self.selected_extras()
+        if not checked and not self.gui.use_trained_lora_var.get():
+            messagebox.showerror(
+                "Nothing to compare",
+                "Tick at least one LoRA (or enable the trained likeness "
+                "LoRA) before opening Compare LoRAs. The comparison "
+                "varies the active set.",
+            )
+            return
+
+        dlg = _LoraCompareDialog(
+            self.gui.root,
+            checked_loras=checked,
+            use_trained=bool(self.gui.use_trained_lora_var.get()),
+            current_stack=self.gui.quality_stack_var.get(),
+        )
+        result = dlg.show()
+        if result is None:
+            return  # user cancelled
+
+        recipes, stack_labels, use_trained_in_every = result
+
+        # Serialise recipes + stacks to a tiny JSON file the CLI can
+        # read. argv is too cramped for nested data; JSON keeps the
+        # contract clear and lets us add fields later without breaking
+        # the CLI signature.
+        import json
+        import tempfile
+        payload = {
+            "recipes": [
+                {
+                    "label": label,
+                    "loras": [
+                        {"path": str(p), "weight": float(w)}
+                        for p, w in r_loras
+                    ],
+                }
+                for label, r_loras in recipes
+            ],
+            "stacks": stack_labels,
+            "use_trained_in_every": bool(use_trained_in_every),
+        }
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8",
+        )
+        json.dump(payload, tmp)
+        tmp.flush()
+        tmp.close()
+
+        # Resolve aspect ratio (same logic as _on_compare_stacks).
+        width, height = 1024, 1024
+        for label, w, h in ASPECT_RATIOS:
+            if label == self.gui.aspect_var.get():
+                width, height = w, h
+                break
+
+        args = [
+            "generate", str(project.root),
+            "--prompt", body,                          # BODY ONLY
+            "--steps", self.gui.steps_var.get() or "28",
+            "--guidance", self.gui.guidance_var.get() or "5.5",
+            "--width", str(width),
+            "--height", str(height),
+            "--sampler", self.gui.sampler_var.get() or "default",
+            "--compare-loras-json", tmp.name,
+        ]
+        neg = self._final_negative()
+        if neg:
+            args += ["--negative", neg]
+        seed = self.gui.seed_var.get().strip()
+        if seed:
+            args += ["--seed", seed]
+        # `use_trained_in_every` from the dialog overrides the toggle for
+        # the duration of the comparison so the user can include or
+        # exclude the trained LoRA without flipping the main checkbox.
+        if not use_trained_in_every:
+            args.append("--no-trained-lora")
+
+        # Total image count for the progress bar.
+        n_total = max(1, len(recipes) * max(1, len(stack_labels)))
+        self._begin_run(n_total)
         self.gui.on_next_exit = self._end_run
         self.gui.spawn(args)
 
