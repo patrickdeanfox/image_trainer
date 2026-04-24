@@ -519,6 +519,210 @@ ASPECT_RATIOS: list[tuple[str, int, int]] = [
 ]
 
 
+# ---------- Prompt builder dropdown data ----------
+#
+# Each entry is (display_label, prompt_fragment).
+# - "(none)" leaves that axis unspecified — its fragment is the empty string.
+# - Friendly labels are user-facing; prompt fragments are what gets injected.
+# - Order within a list = order in the dropdown. Most-common first.
+#
+# When the user clicks "Build prompt from picks", the builder concatenates
+# the non-empty fragments in a sensible order: subject identity first
+# (1girl + appearance), then outfit, then activity/pose, then scene + camera.
+
+BUILDER_SUBJECT: dict[str, list[tuple[str, str]]] = {
+    "Hair colour": [
+        ("(any)", ""),
+        ("blonde", "long wavy blonde hair"),
+        ("platinum blonde", "platinum blonde hair, very light blonde"),
+        ("dirty blonde", "dirty blonde hair"),
+        ("strawberry blonde", "strawberry blonde hair"),
+        ("brunette", "long brunette hair"),
+        ("dark brown", "long dark brown hair"),
+        ("black", "long black hair"),
+        ("auburn", "auburn hair"),
+        ("red / ginger", "long red hair, ginger"),
+        ("pink dyed", "pink dyed hair"),
+        ("blue dyed", "blue dyed hair"),
+        ("short blonde", "short blonde hair, pixie cut"),
+        ("short dark", "short dark hair, bob cut"),
+    ],
+    "Eye colour": [
+        ("(any)", ""),
+        ("blue", "blue eyes"),
+        ("green", "green eyes"),
+        ("hazel", "hazel eyes"),
+        ("brown", "brown eyes"),
+        ("dark brown", "dark brown eyes"),
+        ("grey", "grey eyes"),
+        ("amber", "amber eyes"),
+    ],
+    "Skin tone": [
+        ("(any)", ""),
+        ("fair", "fair skin"),
+        ("light", "light skin"),
+        ("medium", "medium skin tone"),
+        ("tanned", "tanned skin, sun-kissed"),
+        ("olive", "olive skin"),
+        ("dark", "dark skin"),
+        ("ebony", "ebony skin, dark complexion"),
+    ],
+    "Body type": [
+        ("(any)", ""),
+        ("slim", "slim body, slender"),
+        ("athletic", "athletic body, fit, toned"),
+        ("petite", "petite body, small frame"),
+        ("average", "average body, natural proportions"),
+        ("curvy", "curvy body, hourglass figure"),
+        ("voluptuous", "voluptuous body, full figure"),
+        ("plus size", "plus size body, BBW"),
+        ("muscular", "muscular body, defined muscles"),
+    ],
+    "Breast size": [
+        ("(any)", ""),
+        ("small", "small breasts, A cup"),
+        ("medium", "medium breasts, B cup"),
+        ("large", "large breasts, D cup"),
+        ("huge", "huge breasts, very large"),
+        ("perky natural", "perky natural breasts"),
+        ("natural", "natural breasts"),
+    ],
+    "Makeup": [
+        ("(any)", ""),
+        ("none", "no makeup, bare face"),
+        ("natural", "natural makeup, minimal"),
+        ("light glam", "light makeup, mascara, light lip"),
+        ("heavy glam", "heavy makeup, smokey eye, bold lip"),
+        ("red lipstick", "red lipstick, glamour makeup"),
+        ("instagram filter", "instagram makeup, contoured, polished"),
+    ],
+}
+
+BUILDER_SCENE: dict[str, list[tuple[str, str]]] = {
+    "Setting": [
+        ("(any)", ""),
+        ("bedroom", "in bedroom, unmade bed visible, cozy interior"),
+        ("kitchen", "in kitchen, modern kitchen interior, counter visible"),
+        ("bathroom", "in bathroom, bathroom mirror, tile background"),
+        ("living room", "in living room, sofa, casual home interior"),
+        ("home office", "in home office, casual workspace"),
+        ("outdoor day", "outdoor scene, daylight, natural environment"),
+        ("outdoor night", "outdoor at night, urban street, low light"),
+        ("beach", "on beach, sand, ocean background, summer"),
+        ("pool", "by pool, poolside, sunny day"),
+        ("hotel room", "in hotel room, modern hotel decor, luxury"),
+        ("car interior", "inside car, driver seat, modern interior"),
+        ("nightclub", "nightclub, neon lighting, dance floor"),
+        ("studio", "professional studio, neutral seamless backdrop"),
+        ("forest / nature", "outdoor in forest, natural setting, trees"),
+        ("rooftop", "on rooftop, city skyline view"),
+    ],
+    "Time of day": [
+        ("(any)", ""),
+        ("morning", "morning light, soft warm dawn light"),
+        ("afternoon", "afternoon light, bright daylight"),
+        ("golden hour", "golden hour, warm sunset light, lens flare"),
+        ("evening", "evening, blue hour, fading light"),
+        ("night", "night time, low light, ambient glow"),
+    ],
+    "Lighting": [
+        ("(any)", ""),
+        ("natural window", "soft natural window light, daylight diffused"),
+        ("overhead lamp", "warm overhead lamp light, indoor"),
+        ("smartphone flash", "smartphone flash, harsh on-camera flash photo"),
+        ("candlelight", "warm candlelight, intimate, soft glow"),
+        ("studio softbox", "professional studio lighting, softbox key + rim"),
+        ("backlight", "backlit subject, silhouette lighting, rim light"),
+        ("dramatic side", "dramatic side lighting, chiaroscuro, shadows"),
+        ("neon / nightclub", "neon lighting, mixed colour spotlights"),
+    ],
+    "Camera angle": [
+        ("(any)", ""),
+        ("selfie arm-out", "selfie shot, smartphone camera, arms-length, "
+                           "iphone photo aesthetic"),
+        ("mirror selfie", "mirror selfie, full body in mirror, holding phone"),
+        ("POV downward", "POV downward angle, subject looking up at viewer"),
+        ("POV upward", "POV upward angle, subject looking down at viewer"),
+        ("eye level", "eye level shot, straight-on framing"),
+        ("low angle", "low angle shot, looking up at subject"),
+        ("high angle", "high angle shot, looking down at subject"),
+        ("medium shot", "medium shot, waist-up framing"),
+        ("full body", "full body shot, head to toe visible"),
+        ("close-up", "close-up shot, intimate framing, head and shoulders"),
+        ("over the shoulder", "over-the-shoulder shot, looking back"),
+    ],
+}
+
+BUILDER_ACTION: dict[str, list[tuple[str, str]]] = {
+    "Activity": [
+        ("(any)", ""),
+        ("posing", "posing for camera, model pose"),
+        ("selfie", "taking a selfie, smiling at camera"),
+        ("standing", "standing casually"),
+        ("sitting", "sitting, casual relaxed pose"),
+        ("lying down", "lying down, relaxed on back"),
+        ("walking", "walking, mid-stride, candid"),
+        ("dancing", "dancing pose, dynamic motion"),
+        ("undressing", "in the act of undressing, clothes coming off"),
+        ("masturbating", "masturbating, intimate solo, hand between legs"),
+        ("oral / blowjob", "performing oral sex, blowjob, fellatio"),
+        ("intercourse", "intercourse, intimate sex"),
+        ("cowgirl", "cowgirl position, on top, straddling"),
+        ("doggystyle", "doggystyle position, from behind"),
+        ("69", "69 position, mutual oral"),
+    ],
+    "Outfit / clothing": [
+        ("(any)", ""),
+        ("fully nude", "fully nude, naked, completely undressed"),
+        ("topless", "topless, bare breasts, jeans / pants on"),
+        ("bottomless", "bottomless, naked from waist down, top still on"),
+        ("lingerie", "wearing lingerie, lacy bra and panties"),
+        ("bikini", "wearing bikini, swimsuit"),
+        ("micro bikini", "tiny micro bikini, minimal coverage"),
+        ("casual outfit", "casual clothing, t-shirt and jeans"),
+        ("workout clothes", "wearing workout clothes, sports bra, leggings"),
+        ("sleepwear", "wearing sleepwear, pajamas, oversized t-shirt"),
+        ("cocktail dress", "wearing tight cocktail dress, evening wear"),
+        ("sundress", "wearing summer sundress"),
+        ("sheer / see-through", "wearing sheer see-through clothing"),
+        ("schoolgirl", "schoolgirl outfit, plaid skirt, white shirt"),
+        ("nurse", "nurse outfit, medical uniform"),
+        ("french maid", "french maid outfit, lace and apron"),
+    ],
+    "Pose": [
+        ("(any)", ""),
+        ("standing contrapposto", "standing contrapposto, weight on one leg"),
+        ("hand on hip", "one hand on hip"),
+        ("arms behind head", "arms raised behind head"),
+        ("arms behind back", "arms behind back"),
+        ("hands on chest", "hands cupping breasts"),
+        ("on knees", "on knees, kneeling pose"),
+        ("on all fours", "on all fours, hands and knees"),
+        ("legs spread", "legs spread wide"),
+        ("legs crossed", "legs crossed"),
+        ("squatting", "squatting pose"),
+        ("bent over", "bent over, ass facing camera"),
+        ("arched back", "arched back, breasts forward"),
+        ("looking back", "looking back at viewer over shoulder"),
+        ("on side", "lying on side, hip raised"),
+    ],
+    "Expression": [
+        ("(any)", ""),
+        ("smile", "warm smile, genuine"),
+        ("smirk", "playful smirk, mischievous"),
+        ("parted lips", "parted lips, sultry expression"),
+        ("biting lip", "biting lower lip, seductive"),
+        ("tongue out", "tongue out, playful"),
+        ("serious", "serious expression, neutral"),
+        ("looking away", "looking away from camera, candid"),
+        ("eye contact", "intense eye contact with viewer"),
+        ("laughing", "laughing, candid moment, real expression"),
+        ("orgasm face", "orgasm face, eyes closed, pleasure expression"),
+        ("ahegao", "ahegao expression, eyes rolled back, tongue out"),
+    ],
+}
+
+
 #: NSFW-friendly base checkpoint families with one-line guidance.
 #: Photoreal-first ordering — vanilla Pony V6 XL is deliberately NOT at
 #: the top because it's ~50% anime-trained and drifts stylised even with
@@ -728,6 +932,25 @@ class _GenerateState:
         self.gui = gui
         self.lora_rows: dict[str, dict] = {}
         self.lora_table: tk.Widget | None = None
+        # Prompt-builder selections — one StringVar per dropdown, defaulting
+        # to "(any)" so nothing is injected unless the user picks something.
+        # Three groups (Subject / Scene / Action) keyed by display label.
+        self.builder_vars: dict[str, dict[str, tk.StringVar]] = {
+            "Subject": {
+                k: tk.StringVar(value=opts[0][0])
+                for k, opts in BUILDER_SUBJECT.items()
+            },
+            "Scene": {
+                k: tk.StringVar(value=opts[0][0])
+                for k, opts in BUILDER_SCENE.items()
+            },
+            "Action": {
+                k: tk.StringVar(value=opts[0][0])
+                for k, opts in BUILDER_ACTION.items()
+            },
+        }
+        # Tattoos is a single boolean — kept separate from the dropdowns.
+        self.builder_tattoos_var = tk.BooleanVar(value=False)
         # The actual prompt body the user types (separated from any preset
         # template wrapping or quality-stack prefix).
         # Pre-populated NSFW body — a standalone full-body nude blonde
@@ -758,9 +981,59 @@ class _GenerateState:
     def build_form(self, root: ttk.Frame) -> None:
         PAD = gui_theme.PAD
 
-        # Quality stack picker
-        qs_box = ttk.LabelFrame(root, text="Quality-tag prefix", padding=PAD)
-        qs_box.grid(row=0, column=0, sticky="we", pady=(0, PAD))
+        # Layout strategy: Prompt builder + Prompt body + LoRA stack are the
+        # primary interactions and stay expanded. Quality stack, prompt
+        # template, negative prompt, and sampler/dimensions are
+        # set-and-forget for most runs and start collapsed — one click to
+        # open when the user wants to tweak them.
+        #
+        # The CollapsibleFrame pattern: outer frame carries the toggle
+        # header; inner padded Frame holds the actual widgets so they don't
+        # touch the collapsible's edges.
+
+        # ROW 0: Prompt builder (NEW, expanded — primary interaction)
+        pb_outer = CollapsibleFrame(root, text="Prompt builder", start_open=True)
+        pb_outer.grid(row=0, column=0, sticky="we", pady=(0, PAD))
+        pb_box = ttk.Frame(pb_outer.body, padding=PAD)
+        pb_box.pack(fill="both", expand=True)
+        self._build_prompt_builder(pb_box)
+
+        # ROW 1: Prompt body (always visible — this is the main editable output)
+        prompt_box = ttk.LabelFrame(root, text="Prompt body", padding=PAD)
+        prompt_box.grid(row=1, column=0, sticky="we", pady=(0, PAD))
+        prompt_box.columnconfigure(0, weight=1)
+        ttk.Label(
+            prompt_box,
+            text=(
+                "What you'd type yourself. Quality stack is prepended; trigger "
+                "word is auto-injected by the template. Edit freely."
+            ),
+            style="Status.TLabel", wraplength=520, justify="left",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self.prompt_text = tk.Text(
+            prompt_box, height=4, wrap="word",
+            background=gui_theme.THEME.BG_INPUT,
+            foreground=gui_theme.THEME.TEXT_PRIMARY,
+            font=gui_theme.THEME.FONT_BODY, relief="flat", borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=gui_theme.THEME.DIVIDER,
+            highlightcolor=gui_theme.THEME.FOCUS_RING,
+        )
+        self.prompt_text.insert("1.0", self.body_var.get())
+        self.prompt_text.grid(row=1, column=0, sticky="we")
+        self.assembled_var = tk.StringVar(value="")
+        ttk.Label(
+            prompt_box, textvariable=self.assembled_var,
+            style="Mono.TLabel", wraplength=520, justify="left",
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+
+        # ROW 2: Quality stack (collapsible, collapsed — set-and-forget)
+        qs_outer = CollapsibleFrame(
+            root, text="Quality-tag prefix (advanced)", start_open=False,
+        )
+        qs_outer.grid(row=2, column=0, sticky="we", pady=(0, PAD))
+        qs_box = ttk.Frame(qs_outer.body, padding=PAD)
+        qs_box.pack(fill="both", expand=True)
         qs_box.columnconfigure(1, weight=1)
         ttk.Label(qs_box, text="Stack:").grid(row=0, column=0, sticky="w")
         info_icon(
@@ -776,7 +1049,6 @@ class _GenerateState:
             state="readonly",
         )
         qs_combo.grid(row=0, column=1, sticky="we", padx=PAD)
-        # Hover description below the combobox so users see what each stack does.
         self.qs_hint_var = tk.StringVar(value=QUALITY_STACKS[0][2])
         ttk.Label(
             qs_box, textvariable=self.qs_hint_var, style="Status.TLabel",
@@ -786,9 +1058,14 @@ class _GenerateState:
             "<<ComboboxSelected>>", lambda _e: self._on_quality_stack_change(),
         )
 
-        # Prompt template picker
-        tpl_box = ttk.LabelFrame(root, text="Prompt template", padding=PAD)
-        tpl_box.grid(row=1, column=0, sticky="we", pady=(0, PAD))
+        # ROW 3: Quick template picker (collapsible, collapsed — alternative
+        # to the builder for users who want a one-click preset)
+        tpl_outer = CollapsibleFrame(
+            root, text="Quick prompt template (alt to builder)", start_open=False,
+        )
+        tpl_outer.grid(row=3, column=0, sticky="we", pady=(0, PAD))
+        tpl_box = ttk.Frame(tpl_outer.body, padding=PAD)
+        tpl_box.pack(fill="both", expand=True)
         tpl_box.columnconfigure(1, weight=1)
         ttk.Label(tpl_box, text="Apply:").grid(row=0, column=0, sticky="w")
         info_icon(
@@ -816,38 +1093,13 @@ class _GenerateState:
             command=self._apply_template,
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(PAD // 2, 0))
 
-        # Prompt body
-        prompt_box = ttk.LabelFrame(root, text="Prompt body", padding=PAD)
-        prompt_box.grid(row=2, column=0, sticky="we", pady=(0, PAD))
-        prompt_box.columnconfigure(0, weight=1)
-        ttk.Label(
-            prompt_box,
-            text=(
-                "What you'd type yourself. Quality stack is prepended; trigger "
-                "word is auto-injected by the template. Edit freely."
-            ),
-            style="Status.TLabel", wraplength=520, justify="left",
-        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
-        self.prompt_text = tk.Text(
-            prompt_box, height=4, wrap="word",
-            background=gui_theme.THEME.BG_INPUT,
-            foreground=gui_theme.THEME.TEXT_PRIMARY,
-            font=gui_theme.THEME.FONT_BODY, relief="flat", borderwidth=0,
-            highlightthickness=1,
-            highlightbackground=gui_theme.THEME.DIVIDER,
-            highlightcolor=gui_theme.THEME.FOCUS_RING,
+        # ROW 4: Negative prompt (collapsible, collapsed)
+        neg_outer = CollapsibleFrame(
+            root, text="Negative prompt", start_open=False,
         )
-        self.prompt_text.insert("1.0", self.body_var.get())
-        self.prompt_text.grid(row=1, column=0, sticky="we")
-        self.assembled_var = tk.StringVar(value="")
-        ttk.Label(
-            prompt_box, textvariable=self.assembled_var,
-            style="Mono.TLabel", wraplength=520, justify="left",
-        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
-
-        # Negative prompt
-        neg_box = ttk.LabelFrame(root, text="Negative prompt", padding=PAD)
-        neg_box.grid(row=3, column=0, sticky="we", pady=(0, PAD))
+        neg_outer.grid(row=4, column=0, sticky="we", pady=(0, PAD))
+        neg_box = ttk.Frame(neg_outer.body, padding=PAD)
+        neg_box.pack(fill="both", expand=True)
         neg_box.columnconfigure(1, weight=1)
         ttk.Label(neg_box, text="Preset:").grid(row=0, column=0, sticky="w")
         info_icon(
@@ -871,9 +1123,13 @@ class _GenerateState:
         # Seed initial negative.
         self.gui.negative_var.set(NEGATIVE_PRESETS[2][1])
 
-        # Numeric / sampler row
-        nums_box = ttk.LabelFrame(root, text="Sampler & dimensions", padding=PAD)
-        nums_box.grid(row=4, column=0, sticky="we", pady=(0, PAD))
+        # ROW 5: Sampler & dimensions (collapsible, collapsed)
+        nums_outer = CollapsibleFrame(
+            root, text="Sampler & dimensions", start_open=False,
+        )
+        nums_outer.grid(row=5, column=0, sticky="we", pady=(0, PAD))
+        nums_box = ttk.Frame(nums_outer.body, padding=PAD)
+        nums_box.pack(fill="both", expand=True)
         nums_box.columnconfigure(0, weight=1)
 
         nums = ttk.Frame(nums_box)
@@ -954,8 +1210,9 @@ class _GenerateState:
         )
 
         # LoRA stack
+        # ROW 6: LoRA stack (always expanded — high-frequency interaction).
         lora_box = ttk.LabelFrame(root, text="LoRA stack", padding=PAD)
-        lora_box.grid(row=5, column=0, sticky="we", pady=(0, PAD))
+        lora_box.grid(row=6, column=0, sticky="we", pady=(0, PAD))
         lora_box.columnconfigure(0, weight=1)
         self._build_lora_block(lora_box)
 
@@ -1032,6 +1289,182 @@ class _GenerateState:
             ),
             style="Status.TLabel", wraplength=320, justify="left",
         ).grid(row=0, column=0, sticky="w")
+
+    # ---- Prompt builder ----
+
+    def _build_prompt_builder(self, root: ttk.Frame) -> None:
+        """Lay out the structured prompt-builder dropdowns.
+
+        Three sub-sections (Subject / Scene / Action), each with its
+        dropdowns in a 2-column grid. Below them, a "Build prompt from
+        picks" button that assembles the selected fragments into the
+        prompt body. The user then edits the body freely — changing
+        dropdowns afterwards doesn't touch the body until they click
+        Build again.
+        """
+        PAD = gui_theme.PAD
+        root.columnconfigure(0, weight=1)
+
+        # --- one-line intro ---
+        ttk.Label(
+            root,
+            text=(
+                "Pick descriptors per axis → click 'Build prompt from picks'. "
+                "Anything left on '(any)' is omitted. Edit the body freely "
+                "after building."
+            ),
+            style="Status.TLabel", wraplength=520, justify="left",
+        ).grid(row=0, column=0, sticky="w", pady=(0, PAD // 2))
+
+        # --- three sub-sections ---
+        subj = ttk.LabelFrame(root, text="Subject", padding=PAD)
+        subj.grid(row=1, column=0, sticky="we", pady=(0, PAD // 2))
+        self._build_builder_grid(subj, BUILDER_SUBJECT, "Subject",
+                                 include_tattoos=True)
+
+        scn = ttk.LabelFrame(root, text="Scene", padding=PAD)
+        scn.grid(row=2, column=0, sticky="we", pady=(0, PAD // 2))
+        self._build_builder_grid(scn, BUILDER_SCENE, "Scene")
+
+        act = ttk.LabelFrame(root, text="Action", padding=PAD)
+        act.grid(row=3, column=0, sticky="we", pady=(0, PAD // 2))
+        self._build_builder_grid(act, BUILDER_ACTION, "Action")
+
+        # --- build + reset row ---
+        btn_row = ttk.Frame(root)
+        btn_row.grid(row=4, column=0, sticky="we", pady=(PAD // 2, 0))
+        ttk.Button(
+            btn_row, text="Build prompt from picks ▶", style="Primary.TButton",
+            command=self._on_build_from_picks,
+        ).pack(side="left")
+        ttk.Button(
+            btn_row, text="Reset all picks", style="Ghost.TButton",
+            command=self._on_reset_picks,
+        ).pack(side="left", padx=(PAD // 2, 0))
+        info_icon(
+            btn_row,
+            "'Build prompt from picks' replaces the Prompt body with a new "
+            "prompt assembled from your dropdowns. Your LoRA trigger word is "
+            "prepended automatically. Edits to the body after Build are "
+            "preserved — the dropdowns don't auto-sync.",
+        ).pack(side="left", padx=(PAD // 2, 0))
+
+    def _build_builder_grid(
+        self,
+        parent: ttk.LabelFrame,
+        options: dict[str, list[tuple[str, str]]],
+        group_key: str,
+        include_tattoos: bool = False,
+    ) -> None:
+        """Render a dropdown group as a 2-column grid of label+combobox pairs."""
+        PAD = gui_theme.PAD
+        # Each row holds two (label, combobox) pairs — one on the left half,
+        # one on the right half — so the group is compact.
+        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(3, weight=1)
+        keys = list(options.keys())
+        for i, key in enumerate(keys):
+            r, c = divmod(i, 2)
+            col_label = c * 2
+            col_combo = c * 2 + 1
+            ttk.Label(parent, text=f"{key}:").grid(
+                row=r, column=col_label, sticky="w", padx=(0, PAD // 2), pady=2,
+            )
+            combo = ttk.Combobox(
+                parent,
+                textvariable=self.builder_vars[group_key][key],
+                values=[label for label, _ in options[key]],
+                state="readonly",
+                width=22,
+            )
+            combo.grid(
+                row=r, column=col_combo, sticky="we",
+                padx=(0, PAD), pady=2,
+            )
+
+        # Tattoos checkbox — only rendered for the Subject group.
+        if include_tattoos:
+            next_row = (len(keys) + 1) // 2
+            ttk.Checkbutton(
+                parent, text="Tattoos visible",
+                variable=self.builder_tattoos_var,
+            ).grid(
+                row=next_row, column=0, columnspan=2, sticky="w", pady=(PAD // 2, 0),
+            )
+
+    # ---- prompt-builder handlers ----
+
+    def _on_build_from_picks(self) -> None:
+        """Assemble the selected dropdown fragments into the prompt body.
+
+        Order of concatenation: identity anchor → subject appearance →
+        outfit → action → pose → expression → scene → lighting → camera
+        angle. This mirrors the order Pony was trained on booru tag lists,
+        which produces more reliable output than a random permutation.
+        """
+        parts: list[str] = ["1girl"]
+
+        # Inject the project's trigger word if a trained LoRA will be used.
+        # This keeps the builder consistent with the prompt-template flow.
+        if self.gui.current_project and self.gui.use_trained_lora_var.get():
+            trigger = (self.gui.current_project.trigger_word or "").strip()
+            if trigger:
+                parts.insert(0, trigger)
+
+        def pick_fragment(group: str, key: str, table: dict) -> str:
+            label = self.builder_vars[group][key].get()
+            for lbl, frag in table[key]:
+                if lbl == label:
+                    return frag.strip()
+            return ""
+
+        # Subject descriptors
+        for key in BUILDER_SUBJECT:
+            f = pick_fragment("Subject", key, BUILDER_SUBJECT)
+            if f:
+                parts.append(f)
+        if self.builder_tattoos_var.get():
+            parts.append("visible tattoos on body")
+
+        # Outfit comes early because it gates what body tags make sense.
+        out_f = pick_fragment("Action", "Outfit / clothing", BUILDER_ACTION)
+        if out_f:
+            parts.append(out_f)
+
+        # Activity + pose + expression
+        for key in ("Activity", "Pose", "Expression"):
+            f = pick_fragment("Action", key, BUILDER_ACTION)
+            if f:
+                parts.append(f)
+
+        # Scene / setting / lighting / camera angle
+        for key in BUILDER_SCENE:
+            f = pick_fragment("Scene", key, BUILDER_SCENE)
+            if f:
+                parts.append(f)
+
+        # Always anchor "real photo" so even with (any) picks we push toward
+        # photoreal output. Users can remove this in the body if they want
+        # stylised output.
+        parts.append("raw photo, real photograph")
+
+        built = ", ".join(parts)
+        self.prompt_text.delete("1.0", "end")
+        self.prompt_text.insert("1.0", built)
+        self._refresh_assembled()
+
+    def _on_reset_picks(self) -> None:
+        """Reset every dropdown back to '(any)' and clear tattoos."""
+        for group, axes in self.builder_vars.items():
+            table = {
+                "Subject": BUILDER_SUBJECT,
+                "Scene": BUILDER_SCENE,
+                "Action": BUILDER_ACTION,
+            }[group]
+            for key, var in axes.items():
+                # First entry in each options list is "(any)".
+                var.set(table[key][0][0])
+        self.builder_tattoos_var.set(False)
 
     # ---- LoRA library ----
 
