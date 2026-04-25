@@ -88,6 +88,14 @@ class _ReviewState:
                    command=self.reload).pack(side="right", padx=(0, PAD))
         ttk.Button(top, text="Save", style="Ghost.TButton",
                    command=self.save).pack(side="right", padx=(0, PAD))
+        # Clean generics: strip a curated stoplist of beauty/quality
+        # filler tokens from every caption. Significantly improves
+        # likeness LoRA training when WD14 captioner has been used
+        # (its default tag set is heavy on generic descriptors that
+        # weaken the trigger word's specificity). See
+        # _on_clean_generics for the full token list + behaviour.
+        ttk.Button(top, text="Clean generics", style="Ghost.TButton",
+                   command=self._on_clean_generics).pack(side="right", padx=(0, PAD))
 
         # Two stacked frames, only one packed at a time.
         self.detail_frame = ttk.Frame(root)
@@ -864,4 +872,178 @@ class _ReviewState:
         path = review_mod.save(self.gui.current_project, self.review)
         self.gui.status_var.set(f"review saved to {path.name}")
         self.gui.log_queue.put(f"[review saved: {path}]\n")
+        self.gui.refresh_step_status()
+
+    # ---- Generic-token cleaner ----
+    #
+    # Why this exists: WD14's tag captioner reliably emits a chunk of
+    # generic-beauty tokens for every personal-photo dataset (1girl is
+    # fine, but `looking at viewer, beautiful, model, perfect face,
+    # detailed face, ...` are everywhere). Each generic token in the
+    # caption .txt files weakens the trigger word's specificity during
+    # training: the LoRA learns "ohwx person = generic beautiful woman"
+    # instead of "ohwx person = your specific features." The fix is to
+    # strip the generics so the trigger word ends up next to ONLY the
+    # tokens that genuinely describe a particular image.
+    #
+    # The list below is curated from common WD14 + BLIP outputs on
+    # personal datasets. Tokens fall into four buckets:
+    #   1. Subject generics    — "1girl, 1boy, person, woman, man" — KEPT
+    #      because they're cheap anchors that don't compete with the
+    #      trigger word.
+    #   2. Quality boilerplate — "masterpiece, best quality, high
+    #      quality, hd, 4k, 8k, ultra detailed" — STRIPPED. These are
+    #      SDXL-base quality tags that don't help Pony LoRAs and
+    #      dilute training signal.
+    #   3. Generic beauty      — "beautiful, gorgeous, hot, cute, sexy,
+    #      attractive, pretty, perfect, model, fashion model, perfect
+    #      face, detailed face, beautiful face, pretty face, perfect
+    #      eyes, beautiful eyes" — STRIPPED. These are the worst
+    #      offenders.
+    #   4. Composition default — "looking at viewer, looking at camera"
+    #      — KEPT. They describe a real composition choice.
+    #
+    # Anything not in the stoplist is preserved verbatim.
+
+    _GENERIC_STOPLIST = frozenset(s.strip().lower() for s in [
+        # Quality boilerplate
+        "masterpiece", "best quality", "high quality", "highest quality",
+        "ultra quality", "high resolution", "hd", "4k", "8k",
+        "ultra detailed", "extremely detailed", "highly detailed",
+        "intricate", "intricate details", "absurdres", "very detailed",
+        "perfect", "perfectly", "flawless",
+        # Generic beauty descriptors
+        "beautiful", "gorgeous", "stunning", "hot", "cute", "adorable",
+        "sexy", "seductive", "attractive", "pretty", "lovely", "elegant",
+        "graceful", "alluring", "captivating", "mesmerizing",
+        # Generic identity descriptors that fight the trigger word
+        "model", "fashion model", "professional model", "supermodel",
+        "actress", "movie star",
+        # Generic face descriptors (ditto)
+        "perfect face", "detailed face", "beautiful face", "pretty face",
+        "perfect skin", "flawless skin", "smooth skin",
+        "perfect eyes", "beautiful eyes", "pretty eyes",
+        "perfect lips", "beautiful lips", "perfect nose",
+        "perfect teeth", "perfect smile", "perfect body",
+        "perfect anatomy",
+    ])
+
+    def _clean_caption_string(self, caption: str) -> tuple[str, list[str]]:
+        """Return ``(cleaned_caption, removed_tokens)`` for one caption.
+
+        Splits on commas, lowercases each token for matching, drops any
+        token whose stripped form is in ``_GENERIC_STOPLIST``. Original
+        casing of surviving tokens is preserved.
+        """
+        parts = [p.strip() for p in caption.split(",")]
+        kept: list[str] = []
+        removed: list[str] = []
+        for p in parts:
+            if not p:
+                continue
+            if p.lower() in self._GENERIC_STOPLIST:
+                removed.append(p)
+            else:
+                kept.append(p)
+        return ", ".join(kept), removed
+
+    def _on_clean_generics(self) -> None:
+        """Walk every included caption and strip generic-beauty tokens.
+
+        Three-step user flow:
+          1. Compute the diff in memory and show a preview dialog with
+             the per-image change summary.
+          2. On confirm, write the cleaned caption back to ``review.entries``
+             AND save review.json (so the change persists immediately).
+          3. Log a one-line summary to the telemetry pane.
+
+        Refuses on a missing review (Reload first) so we don't operate
+        on a stale in-memory state.
+        """
+        if not self.gui.current_project or self.review is None:
+            messagebox.showerror(
+                "No review loaded",
+                "Click Reload to load the project's captions before "
+                "running Clean generics.",
+            )
+            return
+        # Capture any in-progress edit in the right pane so it's part
+        # of the cleanup pass.
+        self._capture()
+
+        # ---- Pass 1: compute the diff without mutating anything ----
+        plan: list[tuple[str, str, list[str]]] = []  # (stem, new_caption, removed)
+        unchanged_count = 0
+        for stem, entry in self.review.entries.items():
+            cleaned, removed = self._clean_caption_string(entry.caption)
+            if removed:
+                plan.append((stem, cleaned, removed))
+            else:
+                unchanged_count += 1
+
+        if not plan:
+            messagebox.showinfo(
+                "Nothing to clean",
+                f"No generic tokens found across {unchanged_count} "
+                f"captions. Either the dataset is already clean or "
+                f"the stoplist doesn't match this captioner's output.",
+            )
+            return
+
+        # ---- Build the preview dialog ----
+        # Stats line + first ~20 affected stems with their removed tokens.
+        # Cap the preview rows so the dialog stays usable on huge sets.
+        total_removed = sum(len(r) for _, _, r in plan)
+        preview_lines = [
+            f"Will modify {len(plan)} of {len(plan) + unchanged_count} captions.",
+            f"Total tokens removed: {total_removed}",
+            "",
+            "Sample changes (first 20):",
+        ]
+        for stem, _new, removed in plan[:20]:
+            preview_lines.append(f"  {stem}: -[{', '.join(removed)}]")
+        if len(plan) > 20:
+            preview_lines.append(f"  … {len(plan) - 20} more not shown")
+
+        ok = messagebox.askokcancel(
+            "Clean generic tokens?",
+            "\n".join(preview_lines)
+            + "\n\nThis writes review.json AND the per-image .txt files. "
+            "review.json keeps a backup of the previous state at "
+            "review.json.bak so you can revert by hand if needed.",
+        )
+        if not ok:
+            return
+
+        # ---- Pass 2: back up review.json, then mutate + save ----
+        proj = self.gui.current_project
+        review_json = proj.root / "review.json"
+        if review_json.exists():
+            try:
+                bak = review_json.with_suffix(".json.bak")
+                bak.write_text(review_json.read_text(encoding="utf-8"),
+                               encoding="utf-8")
+            except OSError as e:
+                self.gui.log_queue.put(
+                    f"[clean generics] WARNING: couldn't write {bak.name}: {e}\n"
+                )
+        for stem, new_caption, _removed in plan:
+            self.review.entries[stem].caption = new_caption
+
+        # ---- Pass 3: persist + refresh UI ----
+        path = review_mod.save(proj, self.review)
+        # If the user is currently looking at one of the cleaned stems,
+        # refresh the editor so it shows the cleaned text.
+        sel = getattr(self, "current_stem", None)
+        if sel and sel in {stem for stem, _, _ in plan}:
+            entry = self.review.entries[sel]
+            self.caption_text.delete("1.0", "end")
+            self.caption_text.insert("1.0", entry.caption)
+        self.gui.log_queue.put(
+            f"[clean generics] {len(plan)} captions modified, "
+            f"{total_removed} tokens removed; saved to {path.name}\n"
+        )
+        self.gui.status_var.set(
+            f"cleaned {len(plan)} captions ({total_removed} tokens)"
+        )
         self.gui.refresh_step_status()

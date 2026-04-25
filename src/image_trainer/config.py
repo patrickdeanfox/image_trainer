@@ -79,8 +79,14 @@ class Project:
     resolution: int = 1024
 
     # training - LoRA shape
-    lora_rank: int = 32
-    lora_alpha: int = 32
+    # Default rank 64 (was 32). Rank 64 LoRAs have ~2x the trainable
+    # capacity of rank 32; for personal-likeness LoRAs that means
+    # noticeably better face / fine-detail fidelity. Output file goes
+    # ~178 MB → ~350 MB but still fits on 10 GB GPU during training.
+    # Existing projects keep their saved rank value via Project.load —
+    # this default only applies to new projects.
+    lora_rank: int = 64
+    lora_alpha: int = 64
     train_text_encoder: bool = False  # toggled in GUI; off by default to save VRAM
     # TE LoRA-specific knobs. Only meaningful when train_text_encoder=True.
     # Kept separate from UNet LoRA because TEs use less capacity (so lower

@@ -678,6 +678,15 @@ _LORA_CATEGORIES: list[tuple[list[str], str, str, str]] = [
 
 # ---------- Builder ----------
 
+#: Where base SDXL checkpoints live. The Generate tab's base-model
+#: override picker auto-discovers .safetensors files here. This used
+#: to be hard-coded in two places; pulling it out makes "move my
+#: bases somewhere else" a one-line change. If you ever need a
+#: per-machine override, swap this for a function that reads from
+#: `.user_settings.json` or an env var.
+_BASES_DIR = Path("/home/patrick/git/image_trainer/safetensors")
+
+
 def _parse_run_info_text(text: str) -> dict:
     """Parse a `run_info.txt` (as written by `_write_run_info` in
     pipeline/generate.py) into a dict of settings the GUI can apply.
@@ -757,6 +766,15 @@ def _parse_run_info_text(text: str) -> dict:
                         result["height"] = int(parts[1])
                     except ValueError:
                         pass
+            elif s.startswith("base checkpoint"):
+                # The Generate tab uses this to restore the base override
+                # when a run_info.txt is loaded. We always record the
+                # ACTUAL base used at render time (overridden or not),
+                # so loading the file restores the same effective base.
+                _, _, v = s.partition(":")
+                v = v.strip()
+                if v:
+                    result["base_checkpoint"] = v
             elif s.startswith("extra LoRAs"):
                 # The header line is either:
                 #   "extra LoRAs       : (none)"   → empty list
@@ -1170,6 +1188,13 @@ def build(gui: "TrainerGUI") -> None:
     # Portrait 896×1152 is the SDXL bucket closest to "full body fits in
     # frame, head not cropped." 832×1216 is taller still, often cuts feet.
     gui.aspect_var = tk.StringVar(value="Portrait 896×1152")
+    # Base-model override picker. Empty string = "use the project's
+    # configured base_model_path" (the training contract). Any other
+    # value is an absolute path to a .safetensors file under the
+    # known bases dir. Stored as path string for JSON friendliness.
+    # See _build_base_override_row in build_form for the discovery +
+    # UI wiring.
+    gui.base_override_var = tk.StringVar(value="")
     # Default quality stack: read from per-user settings if set, else fall
     # back to the recommended Pony NSFW opener. The pick auto-persists to
     # .user_settings.json whenever the combobox changes (via the global
@@ -1634,6 +1659,102 @@ class _GenerateState:
         act = ttk.LabelFrame(root, text="Action", padding=PAD)
         act.grid(row=4, column=0, sticky="we", pady=(0, PAD // 2))
         self._build_builder_grid(act, BUILDER_ACTION, "Action")
+
+        # --- base-model override row ---
+        # Lives just above Sampler & dimensions because it's a render-
+        # time knob like sampler / aspect / CFG. Default value (empty
+        # string) means "use the project's configured base_model_path"
+        # — i.e. the training contract. Other values temporarily
+        # override the base just for this render call. Does NOT touch
+        # config.json and does NOT invalidate training cache.
+        base_box = ttk.LabelFrame(root, text="Base model (generate-time)", padding=PAD)
+        base_box.grid(row=4, column=0, sticky="we", pady=(0, PAD // 2))
+        base_box.columnconfigure(1, weight=1)
+
+        ttk.Label(base_box, text="Base:").grid(row=0, column=0, sticky="w")
+        info_icon(
+            base_box,
+            "Generate-time base override. Leave blank to use the "
+            "base configured in the Settings tab (the LoRA's "
+            "training contract). Pick a different .safetensors to "
+            "render this prompt against another base — useful for "
+            "A/B-testing your trained LoRA against Lustify, "
+            "JuggernautXL, RealVisXL, etc.\n\n"
+            "Note: a LoRA trained against Pony V6 XL applied to a "
+            "non-Pony base (RealVisXL, Juggernaut) generally fires "
+            "at ~70-85% strength. Same-family bases (Pony Realism, "
+            "Lustify XL) usually fire at 90%+. Cross-family bases "
+            "(SD 1.5, FLUX) won't load at all — pre-flight blocks "
+            "the wrong architecture.\n\n"
+            "Files are auto-discovered from the bases folder "
+            "(default: /home/patrick/git/image_trainer/safetensors). "
+            "Zero-byte files (failed downloads) are filtered out.",
+        ).grid(row=0, column=2, sticky="w", padx=(PAD // 2, 0))
+
+        # Build the dropdown values from disk. The "(project default)"
+        # entry is always first; `""` is its underlying value so the
+        # auto-persist layer can serialise / restore it cleanly.
+        from .. import gui_helpers as _gh
+        bases_dir = _BASES_DIR
+        discovered = _gh.list_base_checkpoints(bases_dir)
+        # Map display labels ↔ paths. Display = "(project default)" or
+        # the file's basename; underlying value (in base_override_var)
+        # is the absolute path string ("" for project default).
+        self._base_label_to_path: dict[str, str] = {
+            "(project default)": "",
+        }
+        for p in discovered:
+            self._base_label_to_path[p.name] = str(p)
+        self._base_path_to_label = {v: k for k, v in self._base_label_to_path.items()}
+
+        # The combobox shows labels; we keep base_override_var holding
+        # the path so the persisted JSON is portable.
+        self._base_label_var = tk.StringVar(
+            value=self._base_path_to_label.get(
+                self.gui.base_override_var.get(), "(project default)"
+            )
+        )
+
+        def _on_base_label_change(*_args: object) -> None:
+            label = self._base_label_var.get()
+            new_path = self._base_label_to_path.get(label, "")
+            if self.gui.base_override_var.get() != new_path:
+                self.gui.base_override_var.set(new_path)
+            self._refresh_base_warning()
+
+        # When the persisted base path is set externally (run_info
+        # loader, manual settings edit) keep the label in sync.
+        def _on_base_path_change(*_args: object) -> None:
+            new_path = self.gui.base_override_var.get()
+            new_label = self._base_path_to_label.get(new_path, "(project default)")
+            if self._base_label_var.get() != new_label:
+                self._base_label_var.set(new_label)
+
+        base_combo = ttk.Combobox(
+            base_box, textvariable=self._base_label_var,
+            values=list(self._base_label_to_path.keys()),
+            state="readonly", width=42,
+        )
+        base_combo.grid(row=0, column=1, sticky="we", padx=PAD)
+        self._base_label_var.trace_add("write", _on_base_label_change)
+        self.gui.base_override_var.trace_add("write", _on_base_path_change)
+
+        # Refresh button — useful if the user dropped a new file into
+        # the bases folder while the GUI is running.
+        ttk.Button(
+            base_box, text="↺", style="Ghost.TButton", width=3,
+            command=lambda: self._refresh_base_choices(base_combo),
+        ).grid(row=0, column=3, sticky="w", padx=(0, 0))
+
+        # Warning label — shows when the override differs from the
+        # project's training base. Empty string = no warning shown.
+        self._base_warning_var = tk.StringVar(value="")
+        ttk.Label(
+            base_box, textvariable=self._base_warning_var,
+            style="Status.TLabel", wraplength=600, justify="left",
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        # Initial warning state.
+        self._refresh_base_warning()
 
         # --- sampler + dimensions (formerly its own collapsible) ---
         nums_box = ttk.LabelFrame(root, text="Sampler & dimensions", padding=PAD)
@@ -2166,6 +2287,57 @@ class _GenerateState:
         status = "trained ✓" if lora_ready else "not trained yet — run Train first"
         self.likeness_hint_var.set(f"trigger word: {trigger}  ·  {status}")
 
+    # ---- base-model override helpers ----
+
+    def _refresh_base_choices(self, combo: ttk.Combobox) -> None:
+        """Rescan the bases folder and update the dropdown values.
+
+        Useful when the user has just dropped a new .safetensors into
+        /home/patrick/git/image_trainer/safetensors/ — this picks it
+        up without restarting the GUI. Preserves the current selection
+        when possible.
+        """
+        from .. import gui_helpers as _gh
+        discovered = _gh.list_base_checkpoints(_BASES_DIR)
+        # Rebuild the maps in place (they're instance attrs).
+        self._base_label_to_path = {"(project default)": ""}
+        for p in discovered:
+            self._base_label_to_path[p.name] = str(p)
+        self._base_path_to_label = {v: k for k, v in self._base_label_to_path.items()}
+        combo.configure(values=list(self._base_label_to_path.keys()))
+        # If the previously-selected path no longer exists, fall back
+        # to project default; otherwise keep the user's pick.
+        current_path = self.gui.base_override_var.get()
+        if current_path and current_path not in self._base_path_to_label:
+            self.gui.base_override_var.set("")
+            self._base_label_var.set("(project default)")
+        self._refresh_base_warning()
+
+    def _refresh_base_warning(self) -> None:
+        """Show / hide the cross-base warning banner under the picker.
+
+        Appears when the picked base differs from the project's
+        configured base_model_path (the LoRA's training contract).
+        Hidden when the override is empty (project default in use)
+        or matches the project's saved base.
+        """
+        if not hasattr(self, "_base_warning_var"):
+            return
+        override = self.gui.base_override_var.get()
+        proj = self.gui.current_project
+        if not override or proj is None or proj.base_model_path is None:
+            self._base_warning_var.set("")
+            return
+        if str(proj.base_model_path) == override:
+            self._base_warning_var.set("")
+            return
+        self._base_warning_var.set(
+            f"⚠  Override differs from project's training base "
+            f"({Path(str(proj.base_model_path)).name}). "
+            f"LoRA likeness may fire at reduced strength on a "
+            f"non-matching base. Use Compare LoRAs to A/B test."
+        )
+
     def _update_active_count(self) -> None:
         """Refresh the 'N of M active' badge in the enhancements header.
 
@@ -2341,6 +2513,7 @@ class _GenerateState:
             "output_name":      self.gui.output_name_var.get(),
             "use_trained_lora": bool(self.gui.use_trained_lora_var.get()),
             "quality_stack":    self.gui.quality_stack_var.get(),
+            "base_override":    self.gui.base_override_var.get(),
             "extras":           extras,
         }
 
@@ -2410,6 +2583,7 @@ class _GenerateState:
             _set_str(self.gui.aspect_var,        "aspect")
             _set_str(self.gui.output_name_var,   "output_name")
             _set_str(self.gui.quality_stack_var, "quality_stack")
+            _set_str(self.gui.base_override_var, "base_override")
 
             utl = snap.get("use_trained_lora")
             if isinstance(utl, bool):
@@ -2458,6 +2632,7 @@ class _GenerateState:
             self.gui.output_name_var,
             self.gui.use_trained_lora_var,
             self.gui.quality_stack_var,
+            self.gui.base_override_var,
         ]
         for row in self.lora_rows.values():
             watched.append(row["selected_var"])
@@ -2747,6 +2922,10 @@ class _GenerateState:
         out_name = self.gui.output_name_var.get().strip()
         if out_name:
             args += ["--output-name", out_name]
+        # Generate-time base override (empty string = use project default).
+        base_override = self.gui.base_override_var.get().strip()
+        if base_override:
+            args += ["--base-override", base_override]
         if not self.gui.use_trained_lora_var.get():
             args.append("--no-trained-lora")
         extras = self.selected_extras()
@@ -2861,6 +3040,18 @@ class _GenerateState:
                         self.gui.aspect_var.set(label)
                         break
 
+            # Base override: only set if the run_info's recorded base
+            # differs from the project's training contract. Matching
+            # paths leave the override empty (= "use project default").
+            base_in_info = info.get("base_checkpoint")
+            if base_in_info:
+                proj = self.gui.current_project
+                proj_base = str(proj.base_model_path) if proj and proj.base_model_path else ""
+                if base_in_info != proj_base:
+                    self.gui.base_override_var.set(base_in_info)
+                else:
+                    self.gui.base_override_var.set("")
+
             # LoRA stack: match by filename stem against currently-known
             # rows. Untick everything first so missing files = unticked.
             for row in self.lora_rows.values():
@@ -2968,6 +3159,12 @@ class _GenerateState:
             args.append("--no-trained-lora")
         for path, weight in self.selected_extras():
             args += ["--extra-lora", f"{path}:{weight}"]
+        # Apply the same generate-time base override across the compare
+        # set so every stack is rendered against the same checkpoint
+        # (otherwise the stacks aren't comparable).
+        base_override = self.gui.base_override_var.get().strip()
+        if base_override:
+            args += ["--base-override", base_override]
 
         self._begin_run(n_stacks)
         self.gui.on_next_exit = self._end_run
@@ -3080,6 +3277,11 @@ class _GenerateState:
         # exclude the trained LoRA without flipping the main checkbox.
         if not use_trained_in_every:
             args.append("--no-trained-lora")
+        # Honour the same generate-time base override across the
+        # compare run so the LoRA recipes are A/B'd against ONE base.
+        base_override = self.gui.base_override_var.get().strip()
+        if base_override:
+            args += ["--base-override", base_override]
 
         # Total image count for the progress bar.
         n_total = max(1, len(recipes) * max(1, len(stack_labels)))

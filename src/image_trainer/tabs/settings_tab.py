@@ -30,7 +30,12 @@ def build(gui: "TrainerGUI") -> None:
     gui.trigger_var = tk.StringVar()
     gui.base_model_var = tk.StringVar()
     gui.resolution_var = tk.StringVar(value="1024")
-    gui.lora_rank_var = tk.StringVar(value="32")
+    # Default rank 64 (was 32) — ~2× trainable capacity, noticeably
+    # better face / fine-detail fidelity for personal-likeness LoRAs.
+    # Output file goes ~178 MB → ~350 MB; still fits on 10 GB. When
+    # Settings_tab loads an existing project, the saved value
+    # overrides this default.
+    gui.lora_rank_var = tk.StringVar(value="64")
     gui.grad_accum_var = tk.StringVar(value="1")
     gui.max_steps_var = tk.StringVar(value="1500")
     gui.checkpointing_steps_var = tk.StringVar(value="100")

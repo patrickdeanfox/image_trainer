@@ -351,6 +351,15 @@ def _cmd_generate(args: argparse.Namespace) -> None:
         ]
         compare_stacks_subset = cl_payload.get("stacks") or []
 
+    # `--base-override` (or None) gets passed through to generate().
+    # The pipeline preference order is: explicit override > project's
+    # base_model_path. Resolved in pipeline.generate.generate().
+    base_override = getattr(args, "base_override", None)
+    base_override_path = (
+        Path(base_override).expanduser().resolve()
+        if base_override else None
+    )
+
     generate(
         project,
         prompt=args.prompt,
@@ -369,6 +378,7 @@ def _cmd_generate(args: argparse.Namespace) -> None:
         compare_loras=compare_loras,
         lora_recipes=lora_recipes,
         compare_stacks_subset=compare_stacks_subset,
+        base_override=base_override_path,
     )
 
 
@@ -662,6 +672,19 @@ def build_parser() -> argparse.ArgumentParser:
             "[{\"path\": str, \"weight\": float}, ...]}, ...], "
             "\"stacks\": [stack_label, ...]}. Output goes to "
             "outputs/lora_compare_<timestamp>/."
+        ),
+    )
+    sp.add_argument(
+        "--base-override",
+        default=None,
+        help=(
+            "Generate-time override for the project's base checkpoint. "
+            "Path to a .safetensors / .ckpt file or a HuggingFace model "
+            "ID. When set, this base is used INSTEAD of the project's "
+            "configured base_model_path for THIS render only. Does not "
+            "touch config.json and does not invalidate training cache. "
+            "Useful for A/B testing a trained LoRA against multiple "
+            "bases without committing to a new training base."
         ),
     )
     sp.set_defaults(func=_cmd_generate)

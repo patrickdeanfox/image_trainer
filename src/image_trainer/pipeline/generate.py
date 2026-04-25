@@ -265,6 +265,7 @@ def generate(
     compare_loras: bool = False,
     lora_recipes: Optional[list[tuple[str, list[tuple[Path, float]]]]] = None,
     compare_stacks_subset: Optional[list[str]] = None,
+    base_override: Optional[Path] = None,
 ) -> list[Path]:
     """Generate `n` images with the project's base checkpoint and optional LoRAs.
 
@@ -317,7 +318,19 @@ def generate(
             f"first, or pass --no-trained-lora to render with the base model only."
         )
 
-    base = project.base_model_path
+    # Base resolution: explicit override (generate-time) takes precedence
+    # over the project's configured base_model_path (training contract).
+    # The override does NOT touch project.base_model_path or invalidate
+    # training cache — it only swaps which checkpoint THIS render uses.
+    if base_override is not None:
+        base = Path(base_override)
+        print(
+            f"Base override: {base} "
+            f"(project default: {project.base_model_path})",
+            flush=True,
+        )
+    else:
+        base = project.base_model_path
     if base.suffix == ".safetensors" and base.is_file():
         pipe = StableDiffusionXLPipeline.from_single_file(
             str(base), torch_dtype=torch.float16
@@ -649,7 +662,7 @@ def generate(
 
         _write_run_info(
             out_dir=out_dir, mode="compare_stacks",
-            project=project, base_model_path=project.base_model_path,
+            project=project, base_model_path=base,
             body_or_prompt=prompt, negative=negative_prompt or "",
             sampler=sampler, steps=steps, guidance=guidance,
             width=width, height=height,
@@ -769,7 +782,7 @@ def generate(
 
         _write_run_info(
             out_dir=out_dir, mode="compare_loras",
-            project=project, base_model_path=project.base_model_path,
+            project=project, base_model_path=base,
             body_or_prompt=prompt, negative=negative_prompt or "",
             sampler=sampler, steps=steps, guidance=guidance,
             width=width, height=height,
@@ -853,7 +866,7 @@ def generate(
 
     _write_run_info(
         out_dir=out_dir, mode="generate",
-        project=project, base_model_path=project.base_model_path,
+        project=project, base_model_path=base,
         body_or_prompt=prompt, negative=negative_prompt or "",
         sampler=sampler, steps=steps, guidance=guidance,
         width=width, height=height,

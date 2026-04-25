@@ -329,6 +329,33 @@ def list_shared_loras(projects_root: Path) -> list[Path]:
     return files
 
 
+def list_base_checkpoints(bases_dir: Path) -> list[Path]:
+    """Every .safetensors / .ckpt file directly under the bases folder.
+
+    Used by the Generate-tab base-model override picker. Skips zero-byte
+    files (failed downloads) so the dropdown doesn't include broken
+    files. Sorted alphabetically for predictable order.
+    """
+    if not bases_dir.exists():
+        return []
+    files: list[Path] = []
+    for p in bases_dir.iterdir():
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in (".safetensors", ".ckpt"):
+            continue
+        try:
+            if p.stat().st_size < 100_000:
+                # Almost certainly a failed download / HTML error page.
+                # Real SDXL checkpoints are 5+ GB.
+                continue
+        except OSError:
+            continue
+        files.append(p)
+    files.sort(key=lambda p: p.name.lower())
+    return files
+
+
 # ---------- folder inventory ----------
 
 def folder_size_and_count(path: Path) -> tuple[int, int]:
