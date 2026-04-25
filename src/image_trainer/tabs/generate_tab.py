@@ -552,115 +552,12 @@ BUILDER_ACTION: dict[str, list[tuple[str, str]]] = {
 }
 
 
-#: NSFW-friendly base checkpoint families with one-line guidance.
-#: Photoreal-first ordering — vanilla Pony V6 XL is deliberately NOT at
-#: the top because it's ~50% anime-trained and drifts stylised even with
-#: source_real. For photoreal work, start from a Pony fine-tune that was
-#: trained specifically on photo data.
-BASE_RECOMMENDATIONS: list[tuple[str, str]] = [
-    (
-        "Lustify XL  ★ best photoreal NSFW",
-        "Pony fine-tune trained heavily on photographic NSFW data. "
-        "Same score_X vocabulary as Pony but photorealistic output out "
-        "of the box — you DON'T have to fight anime bias. Top pick for "
-        "personal-likeness LoRA work. Civitai.",
-    ),
-    (
-        "Pony Realism V2.x  ★ photoreal",
-        "Another Pony fine-tune optimized for photoreal output. Slightly "
-        "different skin tone + lighting bias than Lustify. Pair with Pony "
-        "score_X stack. Worth trying both to see which you prefer. Civitai.",
-    ),
-    (
-        "CyberRealistic Pony",
-        "Another Pony photoreal fine-tune. Tends toward warmer lighting "
-        "and glossier skin — less gritty than Lustify, less editorial "
-        "than Pony Realism. Civitai.",
-    ),
-    (
-        "RealVisXL V5  ·  non-Pony photoreal",
-        "SDXL fine-tune, not Pony-derivative. No score_X tags. Cleaner "
-        "faces but tighter on NSFW — needs the heavier uncensor negative "
-        "and explicit body-part anchors in the prompt. Use the 'Photoreal "
-        "pro (non-Pony)' quality stack.",
-    ),
-    (
-        "EpicRealism XL",
-        "Another non-Pony photoreal SDXL. Strong on lighting + skin. "
-        "Same caveats as RealVisXL — tighter NSFW, use heavy uncensor.",
-    ),
-    (
-        "Pony Diffusion V6 XL  ·  caveat",
-        "The original. Industry standard but ~50% anime-trained — drifts "
-        "stylised even with source_real. Use 'Pony · heavy photoreal' "
-        "quality stack + heavy anti-anime negative to force photo output. "
-        "Or just switch to Lustify / Pony Realism for photoreal work.",
-    ),
-    (
-        "JuggernautXL",
-        "Versatile SDXL fine-tune. Good photoreal baseline, fewer "
-        "Pony-isms. Tighter on NSFW than the Pony family.",
-    ),
-    (
-        "Illustrious-XL / NoobAI-XL",
-        "Anime/illustration NSFW. Different prompt vocabulary "
-        "(masterpiece / very aware / etc.). Only if you WANT stylised "
-        "output.",
-    ),
-]
-
-
-#: Civitai LoRA categories worth searching for (no direct links —
-#: civitai LoRAs come and go).
-LORA_RECOMMENDATIONS: list[tuple[str, str]] = [
-    (
-        "Realistic skin  ★ photoreal fix",
-        "Search civitai for 'realistic skin XL', 'real skin SDXL', "
-        "'film skin LoRA', 'skin pores LoRA'. Single biggest lever for "
-        "breaking out of Pony's plastic-doll skin. Stack at 0.5-0.8.",
-    ),
-    (
-        "Anti-anime / photoreal push  ★ photoreal fix",
-        "Search 'photo style XL', 'realistic photo LoRA', 'film photography "
-        "XL'. Actively pushes Pony away from its anime default. Stack at "
-        "0.6-0.9 if you're fighting stylised output.",
-    ),
-    (
-        "Detail enhancer",
-        "Search 'add detail XL' / 'detail tweaker XL'. Adds skin "
-        "micro-texture, fabric weave, hair strands. Use at 0.3-0.6 weight; "
-        "higher = noisy output.",
-    ),
-    (
-        "Anatomy correction",
-        "Search 'perfect anatomy' / 'better anatomy XL'. Fixes hand/foot "
-        "deformity at the cost of some style. Use at 0.4-0.7.",
-    ),
-    (
-        "Lighting LoRAs",
-        "Search 'cinematic lighting XL' / 'natural lighting XL' / "
-        "'golden hour LoRA'. Stack at 0.4-0.7 to push specific lighting "
-        "setups.",
-    ),
-    (
-        "Pose pack",
-        "Search by pose name ('standing nude XL', 'lying down XL', "
-        "'contrapposto SDXL', etc.). Pose LoRAs are the best way to get "
-        "reliable composition without ControlNet.",
-    ),
-    (
-        "Film / analog aesthetic",
-        "Search '35mm film XL', 'kodak portra LoRA', 'analog photography "
-        "SDXL'. Stack at 0.4-0.7 for grain + colour-science authenticity. "
-        "Great anti-anime signal.",
-    ),
-    (
-        "Amateur / smartphone aesthetic",
-        "Search 'iphone photo LoRA', 'amateur photography XL', 'flash "
-        "photography SDXL'. Best match to OnlyFans-style training data. "
-        "Stack at 0.4-0.6.",
-    ),
-]
+# Recommendations data tables (BASE_RECOMMENDATIONS, LORA_RECOMMENDATIONS)
+# and the build_recommendations sidebar were removed when the Generate tab
+# went single-column / full-width. The README still discusses
+# recommendation categories for users coming from the docs; in-app
+# recommendations now live in the Photoreal survival guide info-icon and
+# the per-LoRA category tooltips.
 
 
 # ---------- LoRA category detection ----------
@@ -1311,26 +1208,22 @@ def build(gui: "TrainerGUI") -> None:
         f, textvariable=state.progress_status_var, style="Status.TLabel",
     ).grid(row=2, column=0, sticky="w", pady=(0, PAD // 2))
 
-    # The form + recommendations sidebar lives in a ScrollableFrame because
-    # the Generate tab carries enough vertical content (prompt block + LoRA
-    # stack + recommendations sidebar) to overflow on a 900-tall window.
+    # The form lives in a ScrollableFrame because the Generate tab
+    # carries enough vertical content (prompt block + LoRA stack) to
+    # overflow on a 900-tall window. Single-column full-width layout
+    # — the previous right sidebar (Recommendations / Photoreal
+    # survival guide) was removed in favour of a wider form. The
+    # `build_recommendations` method is still available if anyone
+    # ever wants to bring the sidebar back, but nothing calls it now.
     scroll = ScrollableFrame(f)
     scroll.grid(row=3, column=0, sticky="nswe")
     f.rowconfigure(3, weight=1)  # scroll region claims leftover height
 
-    main = ttk.Frame(scroll.body)
-    main.pack(fill="both", expand=True)
-    main.columnconfigure(0, weight=2)
-    main.columnconfigure(1, weight=1)
-
-    form = ttk.Frame(main)
-    form.grid(row=0, column=0, sticky="nsew", padx=(0, PAD))
+    form = ttk.Frame(scroll.body)
+    form.pack(fill="both", expand=True)
     form.columnconfigure(0, weight=1)
 
-    rec_outer = CollapsibleFrame(main, text="Recommended setup ▾", start_open=True)
-    rec_outer.grid(row=0, column=1, sticky="nsew")
     state.build_form(form)
-    state.build_recommendations(rec_outer.body)
     # Restore the user's persisted builder picks (if any). Done AFTER
     # build_form so the StringVars actually exist when we set them.
     state._apply_persisted_builder_defaults()
@@ -1554,72 +1447,6 @@ class _GenerateState:
         self.smart_neg_var.trace_add("write", lambda *_: self._refresh_assembled())
         self.gui.negative_var.trace_add("write", lambda *_: self._refresh_assembled())
         self._refresh_assembled()
-
-    # ---- right column: NSFW guidance + civitai pointers ----
-
-    def build_recommendations(self, root: ttk.Frame) -> None:
-        # Header supplied by the surrounding CollapsibleFrame.
-        # Compact layout: each recommendation is a single row —
-        # bullet + name + info-icon. Hover the icon to read the
-        # hint that used to be a 2-3 line always-visible Label.
-        # Saves ~250 px of vertical real estate vs. the original
-        # multi-row layout.
-        PAD = gui_theme.PAD
-        root.columnconfigure(0, weight=1)
-
-        bases_box = ttk.LabelFrame(root, text="Best NSFW base checkpoints", padding=PAD)
-        bases_box.grid(row=1, column=0, sticky="we", pady=(0, PAD))
-        bases_box.columnconfigure(0, weight=1)
-        for r, (name, hint) in enumerate(BASE_RECOMMENDATIONS):
-            row = ttk.Frame(bases_box)
-            row.grid(row=r, column=0, sticky="w", pady=1)
-            ttk.Label(
-                row, text=f"• {name}", style="Mono.TLabel",
-            ).pack(side="left")
-            info_icon(row, hint).pack(side="left", padx=(4, 0))
-
-        loras_box = ttk.LabelFrame(root, text="Civitai LoRAs to layer in", padding=PAD)
-        loras_box.grid(row=2, column=0, sticky="we", pady=(0, PAD))
-        loras_box.columnconfigure(0, weight=1)
-        for r, (name, hint) in enumerate(LORA_RECOMMENDATIONS):
-            row = ttk.Frame(loras_box)
-            row.grid(row=r, column=0, sticky="w", pady=1)
-            ttk.Label(
-                row, text=f"• {name}", style="Mono.TLabel",
-            ).pack(side="left")
-            info_icon(row, hint).pack(side="left", padx=(4, 0))
-
-        # Photoreal tips — previously a 6-bullet Label that ate ~150 px of
-        # vertical real estate every time the user opened the Generate tab.
-        # Now collapsed to a single-line header + info_icon that opens a
-        # popup with the same content on click. Wording unchanged.
-        tips_row = ttk.Frame(root)
-        tips_row.grid(row=3, column=0, sticky="we")
-        ttk.Label(
-            tips_row, text="Photoreal survival guide",
-            style="Mono.TLabel",
-        ).pack(side="left")
-        info_icon(
-            tips_row,
-            "Getting anime output despite source_real? The BASE MODEL is "
-            "the biggest lever. Switch from vanilla Pony V6 XL to Lustify "
-            "XL or Pony Realism — both Pony fine-tunes but trained on "
-            "photo data, so photoreal is the default not the fight.\n\n"
-            "If you're stuck on vanilla Pony: use 'Pony · heavy photoreal "
-            "(anti-anime)' quality stack AND 'NSFW · photoreal push' "
-            "negative. Combined they produce photoreal output from "
-            "vanilla Pony.\n\n"
-            "CFG 5-6 is the photoreal sweet spot on Pony. High CFG = "
-            "fried / plastic; low CFG = ignores the prompt. 5.5 works "
-            "for most photoreal workflows.\n\n"
-            "Add ONE photoreal LoRA (zy_Realism_Enhancer_v2 at ~0.35 is "
-            "Pony-calibrated). Don't stack several — total extra-LoRA "
-            "weight past ~1.0 degrades output reliably.\n\n"
-            "Stack trained likeness LoRA at 1.0 + style LoRA at 0.3-0.5. "
-            "Trained carries likeness; style carries photoreal feel.\n\n"
-            "Lock the seed when iterating prompt wording — change one "
-            "word at a time, see exactly what it did.",
-        ).pack(side="left", padx=(6, 0))
 
     # ---- Prompt builder ----
 
@@ -1922,40 +1749,49 @@ class _GenerateState:
         group_key: str,
         include_tattoos: bool = False,
     ) -> None:
-        """Render a dropdown group as a 2-column grid of label+combobox pairs."""
+        """Render a dropdown group as a 3-column grid of label+combobox pairs.
+
+        Three columns of (label, combobox) per row — chosen to take
+        advantage of the full-width form layout. Each combobox has
+        weight=1 on its column so they stretch evenly across the
+        available horizontal space and stay aligned across rows.
+        """
         PAD = gui_theme.PAD
-        # Each row holds two (label, combobox) pairs — one on the left half,
-        # one on the right half — so the group is compact.
-        parent.columnconfigure(1, weight=1)
-        parent.columnconfigure(3, weight=1)
+        # Three (label, combobox) pairs per row: columns are
+        # (lbl0, combo0, lbl1, combo1, lbl2, combo2). Combo columns
+        # get weight=1 so they share the leftover horizontal space
+        # evenly. The "(any)" axis labels stay at width=auto so they
+        # don't waste space.
+        COLS = 3
+        for c in range(COLS):
+            parent.columnconfigure(c * 2 + 1, weight=1, uniform="combo")
         keys = list(options.keys())
         for i, key in enumerate(keys):
-            r, c = divmod(i, 2)
+            r, c = divmod(i, COLS)
             col_label = c * 2
             col_combo = c * 2 + 1
             ttk.Label(parent, text=f"{key}:").grid(
                 row=r, column=col_label, sticky="w", padx=(0, PAD // 2), pady=2,
             )
-            combo = ttk.Combobox(
+            ttk.Combobox(
                 parent,
                 textvariable=self.builder_vars[group_key][key],
                 values=[label for label, _ in options[key]],
                 state="readonly",
-                width=22,
-            )
-            combo.grid(
+            ).grid(
                 row=r, column=col_combo, sticky="we",
                 padx=(0, PAD), pady=2,
             )
 
         # Tattoos checkbox — only rendered for the Subject group.
         if include_tattoos:
-            next_row = (len(keys) + 1) // 2
+            next_row = (len(keys) + COLS - 1) // COLS
             ttk.Checkbutton(
                 parent, text="Tattoos visible",
                 variable=self.builder_tattoos_var,
             ).grid(
-                row=next_row, column=0, columnspan=2, sticky="w", pady=(PAD // 2, 0),
+                row=next_row, column=0, columnspan=COLS * 2,
+                sticky="w", pady=(PAD // 2, 0),
             )
 
     # ---- prompt-builder handlers ----
