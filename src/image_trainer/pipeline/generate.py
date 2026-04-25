@@ -184,7 +184,17 @@ def _preflight_extra_loras(extras: list) -> None:
     warnings_: list[tuple[Path, str]] = []
     for lora_path, _weight in extras:
         p = Path(lora_path)
-        if not p.exists():
+        # Path.exists() can raise OSError on network shares with
+        # changing permissions, broken symlinks on some filesystems,
+        # or path lengths past the OS cap. Treat any check failure
+        # as "file not accessible" rather than letting the exception
+        # propagate uncaught.
+        try:
+            exists = p.exists()
+        except OSError as e:
+            problems.append((p, f"file not accessible ({type(e).__name__}: {e})"))
+            continue
+        if not exists:
             problems.append((p, "file not found"))
             continue
         verdict, reason = _classify_lora(p)

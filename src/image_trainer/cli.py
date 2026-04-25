@@ -337,18 +337,49 @@ def _cmd_generate(args: argparse.Namespace) -> None:
     cl_json = getattr(args, "compare_loras_json", None)
     if cl_json:
         import json as _json
-        cl_payload = _json.loads(Path(cl_json).read_text(encoding="utf-8"))
-        compare_loras = True
-        lora_recipes = [
-            (
-                r["label"],
-                [
-                    (Path(item["path"]).expanduser().resolve(), float(item["weight"]))
-                    for item in r.get("loras", [])
-                ],
+        cl_path = Path(cl_json)
+        # The GUI writes this as a temp sidecar; if anything goes wrong
+        # (file deleted, partial write, hand-edited bad JSON, missing
+        # required fields), fail with a clear error rather than a raw
+        # JSONDecodeError or KeyError. The GUI shows the trailing line
+        # of stdout in its log pane, so the message needs to be
+        # self-contained.
+        try:
+            raw = cl_path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise SystemExit(
+                f"--compare-loras-json: couldn't read {cl_path}: {e}"
             )
-            for r in cl_payload.get("recipes", [])
-        ]
+        try:
+            cl_payload = _json.loads(raw)
+        except _json.JSONDecodeError as e:
+            raise SystemExit(
+                f"--compare-loras-json: malformed JSON in {cl_path}: {e}"
+            )
+        if not isinstance(cl_payload, dict):
+            raise SystemExit(
+                f"--compare-loras-json: expected a JSON object at "
+                f"top level of {cl_path}, got {type(cl_payload).__name__}"
+            )
+        compare_loras = True
+        try:
+            lora_recipes = [
+                (
+                    r["label"],
+                    [
+                        (Path(item["path"]).expanduser().resolve(),
+                         float(item["weight"]))
+                        for item in r.get("loras", [])
+                    ],
+                )
+                for r in cl_payload.get("recipes", [])
+            ]
+        except (KeyError, ValueError, TypeError) as e:
+            raise SystemExit(
+                f"--compare-loras-json: malformed recipes block in "
+                f"{cl_path} ({type(e).__name__}: {e}). Expected "
+                f"recipes=[{{label:str, loras:[{{path:str, weight:float}}, ...]}}, ...]."
+            )
         compare_stacks_subset = cl_payload.get("stacks") or []
 
     # `--base-override` (or None) gets passed through to generate().

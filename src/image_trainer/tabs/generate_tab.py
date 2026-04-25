@@ -46,13 +46,6 @@ if TYPE_CHECKING:
 # (QUALITY_STACKS moved to image_trainer.prompt_presets — imported above.)
 
 
-#: Legacy one-click template picker — retired in favour of the live
-#: Subject / Scene / Action builder. Kept as an empty stub so the symbol
-#: exists for any historical reference; wording for the 18 original
-#: templates lives in git history. Nothing in the live code reads this.
-_LEGACY_PROMPT_TEMPLATES: list[tuple[str, str, str]] = []
-
-
 #: Negative-prompt presets. Pick one — or extend it in the entry below it.
 #:
 #: A good NSFW negative covers FOUR things at once:
@@ -438,14 +431,54 @@ BUILDER_ACTION: dict[str, list[tuple[str, str]]] = {
         ("bathing", "in bathtub, bubble bath, relaxed"),
         ("reading", "reading a book, casual moment"),
         ("smoking", "smoking a cigarette, casual"),
-        ("masturbating", "masturbating, intimate solo, hand between legs"),
-        ("oral / blowjob", "performing oral sex, blowjob, fellatio"),
-        ("intercourse", "intercourse, intimate sex"),
-        ("cowgirl", "cowgirl position, on top, straddling"),
-        ("reverse cowgirl", "reverse cowgirl position, facing away"),
-        ("doggystyle", "doggystyle position, from behind"),
-        ("missionary", "missionary position, lying on back"),
-        ("69", "69 position, mutual oral"),
+    ],
+    # Dedicated sex-act dropdown — separate from "Activity" so SFW
+    # workflows aren't polluted with explicit options and explicit
+    # workflows get a focused list. Default "(none)" emits nothing,
+    # so this axis is fully optional. Multi-token fragments include
+    # the act + a couple of compositional anchors (e.g. "fellatio,
+    # POV blowjob") so Pony has more than one tag to lock onto.
+    "Sex act": [
+        ("(none)", ""),
+        # Solo
+        ("masturbating", "masturbating, intimate solo, hand between legs, fingers"),
+        ("fingering", "fingering self, fingers in pussy, masturbation"),
+        ("toy / vibrator", "using sex toy, vibrator, dildo, masturbating"),
+        # Oral
+        ("oral · giving (BJ)", "performing oral sex, blowjob, fellatio, sucking cock"),
+        ("oral · receiving (cunnilingus)", "receiving oral, cunnilingus, head between legs"),
+        ("69 (mutual oral)", "69 position, mutual oral, sixty-nine"),
+        ("deepthroat", "deepthroat, balls deep, fellatio, gagging"),
+        # Vaginal
+        ("vaginal · missionary", "missionary position, vaginal sex, face to face"),
+        ("vaginal · cowgirl", "cowgirl position, on top, straddling, vaginal"),
+        ("vaginal · reverse cowgirl", "reverse cowgirl position, facing away, vaginal"),
+        ("vaginal · doggystyle", "doggystyle position, from behind, vaginal sex"),
+        ("vaginal · spooning", "spooning sex, side-by-side, vaginal"),
+        ("vaginal · standing", "standing sex, vaginal, against partner"),
+        # Anal
+        ("anal · doggystyle", "anal sex, doggystyle, from behind, anal penetration"),
+        ("anal · missionary", "anal sex, missionary, on back"),
+        ("anal · cowgirl", "anal cowgirl, riding, anal penetration"),
+        # Hands / body / titjob / footjob
+        ("handjob · giving", "giving handjob, jerking off partner"),
+        ("titjob / paizuri", "titjob, paizuri, breasts around cock"),
+        ("footjob", "footjob, feet on cock, pedal play"),
+        # Group / multi-partner
+        ("threesome (FFM)", "threesome, two women one man, FFM"),
+        ("threesome (MMF)", "threesome, two men one woman, MMF"),
+        ("group / orgy", "group sex, multiple partners, orgy"),
+        ("gangbang", "gangbang, multiple men, group penetration"),
+        # Outcome / fluid
+        ("creampie · vaginal", "creampie, cum inside, vaginal creampie"),
+        ("creampie · anal", "anal creampie, cum inside ass"),
+        ("cumshot · facial", "facial, cumshot on face, cum on face"),
+        ("cumshot · body", "cumshot on body, cum on tits, cum on chest"),
+        ("bukkake", "bukkake, multiple cumshots, cum on face"),
+        # Implied / SFW-borderline
+        ("foreplay / making out", "foreplay, making out, kissing, intimate touching"),
+        ("exhibitionism / public", "exhibitionism, public sex, outdoor"),
+        ("voyeur · being watched", "being watched, voyeur scene, audience"),
     ],
     "Outfit / clothing": [
         ("(any)", ""),
@@ -1226,40 +1259,53 @@ def build(gui: "TrainerGUI") -> None:
     # Generate, and have to scroll back down to see anything happening.
     action_bar = ttk.Frame(f)
     action_bar.grid(row=1, column=0, sticky="we", pady=(0, PAD))
-    # Progress bar lives in column 5 (after Generate / Compare stacks /
-    # Compare LoRAs / Load run_info / Open outputs), so that's the column
-    # that absorbs leftover horizontal space.
-    action_bar.columnconfigure(5, weight=1)
+    # Progress bar lives in column 6 (after Generate / Stop / Compare
+    # stacks / Compare LoRAs / Load run_info / Open outputs). That's
+    # the column that absorbs leftover horizontal space.
+    action_bar.columnconfigure(6, weight=1)
     state.generate_btn = ttk.Button(
         action_bar, text="Generate", style="Primary.TButton",
         command=state._on_generate,
     )
     state.generate_btn.grid(row=0, column=0, sticky="w")
+    # Stop button — graceful kill of the in-progress generate (or
+    # compare-stacks / compare-LoRAs) subprocess. Sends SIGINT via
+    # CLIRunner.stop_graceful, which the diffusers pipeline catches at
+    # the next denoising step boundary so any in-flight image is
+    # preserved on disk before the process exits. Hidden when no run
+    # is active; the _begin_run / _end_run hooks show / hide it.
+    state.stop_btn = ttk.Button(
+        action_bar, text="Stop", style="Ghost.TButton",
+        command=state._on_stop,
+    )
+    state.stop_btn.grid(row=0, column=1, sticky="w", padx=(PAD // 2, 0))
+    # Hidden by default; _begin_run shows it when a subprocess starts.
+    state.stop_btn.grid_remove()
     state.compare_btn = ttk.Button(
         action_bar, text="Compare stacks",
         style="Ghost.TButton",
         command=state._on_compare_stacks,
     )
-    state.compare_btn.grid(row=0, column=1, sticky="w", padx=(PAD // 2, 0))
+    state.compare_btn.grid(row=0, column=2, sticky="w", padx=(PAD // 2, 0))
     state.compare_loras_btn = ttk.Button(
         action_bar, text="Compare LoRAs",
         style="Ghost.TButton",
         command=state._on_compare_loras,
     )
-    state.compare_loras_btn.grid(row=0, column=2, sticky="w", padx=(PAD // 2, 0))
+    state.compare_loras_btn.grid(row=0, column=3, sticky="w", padx=(PAD // 2, 0))
     ttk.Button(
         action_bar, text="Load run_info…", style="Ghost.TButton",
         command=state._on_load_run_info,
-    ).grid(row=0, column=3, sticky="w", padx=(PAD // 2, 0))
+    ).grid(row=0, column=4, sticky="w", padx=(PAD // 2, 0))
     ttk.Button(
         action_bar, text="Open outputs", style="Ghost.TButton",
         command=state._open_outputs,
-    ).grid(row=0, column=4, sticky="w", padx=(PAD // 2, 0))
+    ).grid(row=0, column=5, sticky="w", padx=(PAD // 2, 0))
     state.progress = ttk.Progressbar(
         action_bar, mode="determinate",
         style="Trainer.Horizontal.TProgressbar",
     )
-    state.progress.grid(row=0, column=5, sticky="we", padx=(PAD, 0))
+    state.progress.grid(row=0, column=6, sticky="we", padx=(PAD, 0))
     state.progress_status_var = tk.StringVar(value="idle")
     ttk.Label(
         f, textvariable=state.progress_status_var, style="Status.TLabel",
@@ -1308,6 +1354,13 @@ class _GenerateState:
         self.gui = gui
         self.lora_rows: dict[str, dict] = {}
         self.lora_table: tk.Widget | None = None
+        # Pending temp files written by Compare LoRAs as JSON sidecars.
+        # Cleared by _end_run after the subprocess that consumed them
+        # exits, so we don't leak /tmp files when the user clicks
+        # Compare LoRAs repeatedly. List, not single, because two
+        # compare runs back-to-back could each register a temp file
+        # before the first finishes.
+        self._compare_loras_tmpfiles: list[Path] = []
         # Prompt-builder selections — one StringVar per dropdown, defaulting
         # to "(any)" so nothing is injected unless the user picks something.
         # Three groups (Subject / Scene / Action) keyed by display label.
@@ -1505,9 +1558,12 @@ class _GenerateState:
     # ---- right column: NSFW guidance + civitai pointers ----
 
     def build_recommendations(self, root: ttk.Frame) -> None:
-        # Header is supplied by the surrounding CollapsibleFrame so the
-        # whole sidebar can be collapsed when the user wants more room
-        # for the form. Just stack the three reference boxes here.
+        # Header supplied by the surrounding CollapsibleFrame.
+        # Compact layout: each recommendation is a single row —
+        # bullet + name + info-icon. Hover the icon to read the
+        # hint that used to be a 2-3 line always-visible Label.
+        # Saves ~250 px of vertical real estate vs. the original
+        # multi-row layout.
         PAD = gui_theme.PAD
         root.columnconfigure(0, weight=1)
 
@@ -1515,27 +1571,23 @@ class _GenerateState:
         bases_box.grid(row=1, column=0, sticky="we", pady=(0, PAD))
         bases_box.columnconfigure(0, weight=1)
         for r, (name, hint) in enumerate(BASE_RECOMMENDATIONS):
+            row = ttk.Frame(bases_box)
+            row.grid(row=r, column=0, sticky="w", pady=1)
             ttk.Label(
-                bases_box, text=f"• {name}",
-                style="Mono.TLabel",
-            ).grid(row=r * 2, column=0, sticky="w")
-            ttk.Label(
-                bases_box, text=hint,
-                style="Status.TLabel", wraplength=320, justify="left",
-            ).grid(row=r * 2 + 1, column=0, sticky="w", padx=(12, 0), pady=(0, 4))
+                row, text=f"• {name}", style="Mono.TLabel",
+            ).pack(side="left")
+            info_icon(row, hint).pack(side="left", padx=(4, 0))
 
         loras_box = ttk.LabelFrame(root, text="Civitai LoRAs to layer in", padding=PAD)
         loras_box.grid(row=2, column=0, sticky="we", pady=(0, PAD))
         loras_box.columnconfigure(0, weight=1)
         for r, (name, hint) in enumerate(LORA_RECOMMENDATIONS):
+            row = ttk.Frame(loras_box)
+            row.grid(row=r, column=0, sticky="w", pady=1)
             ttk.Label(
-                loras_box, text=f"• {name}",
-                style="Mono.TLabel",
-            ).grid(row=r * 2, column=0, sticky="w")
-            ttk.Label(
-                loras_box, text=hint,
-                style="Status.TLabel", wraplength=320, justify="left",
-            ).grid(row=r * 2 + 1, column=0, sticky="w", padx=(12, 0), pady=(0, 4))
+                row, text=f"• {name}", style="Mono.TLabel",
+            ).pack(side="left")
+            info_icon(row, hint).pack(side="left", padx=(4, 0))
 
         # Photoreal tips — previously a 6-bullet Label that ate ~150 px of
         # vertical real estate every time the user opened the Generate tab.
@@ -1631,17 +1683,12 @@ class _GenerateState:
             state="readonly",
         )
         qs_combo.grid(row=0, column=1, sticky="we", padx=PAD)
-        # "Set as default" button removed — auto-persist saves every field
-        # (quality stack included) to .user_settings.json on change, so the
-        # explicit save action is redundant. See the builder-defaults
-        # button below which has the same redundancy.
-        self.qs_hint_var = tk.StringVar(
-            value=self._stack_hint(self.gui.quality_stack_var.get())
-        )
-        ttk.Label(
-            qs_box, textvariable=self.qs_hint_var, style="Status.TLabel",
-            wraplength=520, justify="left",
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        # The per-stack hint label that used to live here was removed —
+        # the combobox's info_icon already explains every stack option,
+        # and the hint was eating ~40px of always-visible space for
+        # text the user reads once and never again. The
+        # `_on_quality_stack_change` handler still fires (auto-persist
+        # + assembled-prompt refresh) but no longer updates a label.
         qs_combo.bind(
             "<<ComboboxSelected>>", lambda _e: self._on_quality_stack_change(),
         )
@@ -1974,7 +2021,12 @@ class _GenerateState:
             parts.append(out_f)
 
         # Activity + pose + expression
-        for key in ("Activity", "Pose", "Expression"):
+        # "Sex act" between Activity and Pose so the act token sits
+        # near the action verb in the assembled prompt — Pony tends
+        # to weight tokens by position, so the explicit-act tag close
+        # to the activity tag produces more reliable composition than
+        # putting it after pose / expression.
+        for key in ("Activity", "Sex act", "Pose", "Expression"):
             f = pick_fragment("Action", key, BUILDER_ACTION)
             if f:
                 parts.append(f)
@@ -2360,8 +2412,13 @@ class _GenerateState:
     # ---- preset handlers ----
 
     def _on_quality_stack_change(self) -> None:
-        label = self.gui.quality_stack_var.get()
-        self.qs_hint_var.set(self._stack_hint(label))
+        # Combobox-selection handler. Auto-persist (via the trace on
+        # quality_stack_var) catches the new pick on its own. We just
+        # need to re-render the assembled-prompt preview so the user
+        # sees the new prefix taking effect immediately. The old
+        # qs_hint_var label that this used to update was removed in
+        # the UI cleanup pass — its hint now lives in the combobox's
+        # info_icon, which doesn't need refreshing.
         self._refresh_assembled()
 
     @staticmethod
@@ -3043,11 +3100,22 @@ class _GenerateState:
             # Base override: only set if the run_info's recorded base
             # differs from the project's training contract. Matching
             # paths leave the override empty (= "use project default").
+            # Compare via resolved Path to handle relative paths,
+            # trailing slashes, and symlinks the same way generate.py
+            # will when it actually loads the file.
             base_in_info = info.get("base_checkpoint")
             if base_in_info:
                 proj = self.gui.current_project
-                proj_base = str(proj.base_model_path) if proj and proj.base_model_path else ""
-                if base_in_info != proj_base:
+                def _norm(p: object) -> str:
+                    try:
+                        return str(Path(str(p)).expanduser().resolve())
+                    except (OSError, RuntimeError):
+                        return str(p)
+                proj_base_norm = (
+                    _norm(proj.base_model_path)
+                    if proj and proj.base_model_path else ""
+                )
+                if _norm(base_in_info) != proj_base_norm:
                     self.gui.base_override_var.set(base_in_info)
                 else:
                     self.gui.base_override_var.set("")
@@ -3248,6 +3316,10 @@ class _GenerateState:
         json.dump(payload, tmp)
         tmp.flush()
         tmp.close()
+        # Track the temp file's path on the instance so _end_run can
+        # delete it after the subprocess exits. Without this, every
+        # Compare LoRAs run leaks one /tmp/tmpXXXX.json file forever.
+        self._compare_loras_tmpfiles.append(Path(tmp.name))
 
         # Resolve aspect ratio (same logic as _on_compare_stacks).
         width, height = 1024, 1024
@@ -3313,6 +3385,46 @@ class _GenerateState:
             self.generate_btn.configure(text="Generating…")
         except Exception:
             pass
+        # Show the Stop button — gives the user a graceful kill switch
+        # while the subprocess is in-flight. Hidden again by _end_run.
+        try:
+            self.stop_btn.grid()
+            self.stop_btn.state(["!disabled"])
+            self.stop_btn.configure(text="Stop")
+        except Exception:
+            pass
+
+    def _on_stop(self) -> None:
+        """Send SIGINT to the running generate / compare subprocess so it
+        finishes its current image cleanly, writes whatever's done to
+        disk, and exits.
+
+        The diffusers pipeline doesn't support arbitrary mid-step
+        interruption, so SIGINT is observed at the next denoising-step
+        boundary in the script. Practically: clicking Stop interrupts
+        within ~1 second per image, partial outputs are kept.
+        """
+        runner = getattr(self.gui, "runner", None)
+        if runner is None or not runner.is_running():
+            self.gui.log_queue.put(
+                "[stop] no run in progress; nothing to stop\n"
+            )
+            return
+        ok = runner.stop_graceful()
+        if ok:
+            self.progress_status_var.set("stopping…  (waiting for current step)")
+            self.gui.log_queue.put(
+                "[stop] SIGINT sent — subprocess will exit at next step boundary\n"
+            )
+            try:
+                self.stop_btn.state(["disabled"])
+                self.stop_btn.configure(text="Stopping…")
+            except Exception:
+                pass
+        else:
+            self.gui.log_queue.put(
+                "[stop] couldn't send SIGINT — subprocess may have already exited\n"
+            )
 
     def _end_run(self) -> None:
         """Called when the trainer subprocess exits — restore idle state."""
@@ -3321,6 +3433,20 @@ class _GenerateState:
             self.progress.stop()
         except Exception:
             pass
+        # Hide the Stop button now that the subprocess has exited.
+        try:
+            self.stop_btn.grid_remove()
+        except Exception:
+            pass
+        # Clean up any temp JSON sidecars left over from Compare LoRAs.
+        # Done here (not in _on_compare_loras) because the subprocess
+        # is the consumer; deleting before exit is a TOCTOU bug.
+        for tmp in list(self._compare_loras_tmpfiles):
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        self._compare_loras_tmpfiles.clear()
         self.progress.configure(mode="determinate", maximum=max(1, self.images_total))
         self.progress["value"] = self.images_total if self.images_done >= self.images_total else self.images_done
         self.progress_status_var.set(

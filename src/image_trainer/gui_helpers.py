@@ -268,12 +268,31 @@ def load_user_settings(projects_root: Path) -> dict:
 
 
 def save_user_settings(projects_root: Path, data: dict) -> None:
-    """Persist per-user settings, swallowing OS errors (best-effort)."""
+    """Persist per-user settings, swallowing OS errors (best-effort).
+
+    Atomic write: serialise to a temp file in the same directory, then
+    ``os.replace`` onto the final path. ``os.replace`` is atomic on POSIX
+    and Windows, so a crash / power loss / SIGKILL mid-write can't leave
+    a partial / corrupt JSON behind. The GUI's auto-persist fires on
+    almost every keystroke; a non-atomic write would eventually be
+    interrupted and produce a half-written file that breaks the next
+    launch's load.
+    """
+    import os as _os
     projects_root.mkdir(parents=True, exist_ok=True)
+    final = _user_settings_path(projects_root)
+    payload = json.dumps(data, indent=2)
+    tmp = final.with_suffix(final.suffix + ".tmp")
     try:
-        _user_settings_path(projects_root).write_text(json.dumps(data, indent=2))
+        tmp.write_text(payload, encoding="utf-8")
+        _os.replace(str(tmp), str(final))
     except OSError:
-        pass
+        # Best-effort: clean up the temp file if it survived a partial
+        # write, so we don't accumulate .json.tmp orphans.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def update_user_setting(projects_root: Path, key: str, value) -> dict:
@@ -507,10 +526,12 @@ def kill_processes(pids: Iterable[int], *, escalate_after_s: float = 2.0) -> dic
 
     # Phase 2: confirm + escalate.
     for pid in pids:
-        if pid in out and out[pid] not in (None,):  # noqa: E711 — explicit
-            # Already classified (gone / perm-denied / failed). Skip.
-            if out[pid] != "perm-denied" and out[pid] != "gone":
-                pass
+        # Skip pids already classified by phase 1 (gone / perm-denied /
+        # failed) — they've either exited or we don't have permission.
+        # An earlier version of this loop had a no-op `if ... pass`
+        # block that did nothing; replaced with an explicit `continue`.
+        if pid in out and out[pid] in ("gone", "perm-denied"):
+            continue
         try:
             os.kill(pid, 0)  # alive?
         except ProcessLookupError:
