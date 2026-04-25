@@ -1749,20 +1749,19 @@ class _GenerateState:
         group_key: str,
         include_tattoos: bool = False,
     ) -> None:
-        """Render a dropdown group as a 3-column grid of label+combobox pairs.
+        """Render a dropdown group as a 2-column grid of label+combobox pairs.
 
-        Three columns of (label, combobox) per row — chosen to take
-        advantage of the full-width form layout. Each combobox has
-        weight=1 on its column so they stretch evenly across the
-        available horizontal space and stay aligned across rows.
+        Two pairs per row keeps every combobox wide enough to read its
+        longest option label without clipping (the third-column 3-col
+        layout that was here briefly clipped the rightmost combobox on
+        narrower windows, hiding axes like 'Sex act' entirely).
+
+        Layout: columns are (label0, combo0, label1, combo1). Combo
+        columns get weight=1 + uniform group so they share leftover
+        horizontal space evenly and line up across rows.
         """
         PAD = gui_theme.PAD
-        # Three (label, combobox) pairs per row: columns are
-        # (lbl0, combo0, lbl1, combo1, lbl2, combo2). Combo columns
-        # get weight=1 so they share the leftover horizontal space
-        # evenly. The "(any)" axis labels stay at width=auto so they
-        # don't waste space.
-        COLS = 3
+        COLS = 2
         for c in range(COLS):
             parent.columnconfigure(c * 2 + 1, weight=1, uniform="combo")
         keys = list(options.keys())

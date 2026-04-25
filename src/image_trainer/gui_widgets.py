@@ -303,13 +303,18 @@ class ScrollableFrame(ttk.Frame):
         # telemetry pane off the bottom of the window. The canvas can
         # still expand beyond these via fill="both" expand=True; the
         # numbers are just the *minimum* it requests.
+        # Bumped to 600 (was 200) — the Generate tab's form is taller
+        # since the right sidebar was removed, and 200 px gave only
+        # ~6 lines of visible content before scroll kicked in. 600 px
+        # shows roughly the prompt body + 2-3 picker groups before
+        # the user has to scroll.
         self._canvas = tk.Canvas(
             self,
             background=bg,
             highlightthickness=0,
             borderwidth=0,
-            width=600,
-            height=200,
+            width=700,
+            height=600,
         )
         self._canvas.pack(side="left", fill="both", expand=True)
 
