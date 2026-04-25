@@ -1647,7 +1647,12 @@ class _GenerateState:
         # override the base just for this render call. Does NOT touch
         # config.json and does NOT invalidate training cache.
         base_box = ttk.LabelFrame(root, text="Base model (generate-time)", padding=PAD)
-        base_box.grid(row=4, column=0, sticky="we", pady=(0, PAD // 2))
+        # row=5 — the Action picker LabelFrame (`act`) above is at row=4;
+        # placing base_box at row=4 made them overlap and clipped most of
+        # the Action group's pickers (Activity, Sex act, Outfit, Pose
+        # were hidden behind base_box). Bumping to row=5 fixes the
+        # collision; nums_box and btn_row below are also bumped.
+        base_box.grid(row=5, column=0, sticky="we", pady=(0, PAD // 2))
         base_box.columnconfigure(1, weight=1)
 
         ttk.Label(base_box, text="Base:").grid(row=0, column=0, sticky="w")
@@ -1737,7 +1742,10 @@ class _GenerateState:
 
         # --- sampler + dimensions (formerly its own collapsible) ---
         nums_box = ttk.LabelFrame(root, text="Sampler & dimensions", padding=PAD)
-        nums_box.grid(row=5, column=0, sticky="we", pady=(0, PAD // 2))
+        # row=6 (was row=5) — bumped because the base-model override
+        # box at row=5 displaced everything below it. See the comment
+        # on `base_box.grid(row=5, ...)` above for the rationale.
+        nums_box.grid(row=6, column=0, sticky="we", pady=(0, PAD // 2))
         nums_box.columnconfigure(0, weight=1)
 
         nums = ttk.Frame(nums_box)
@@ -1827,7 +1835,9 @@ class _GenerateState:
         # re-triggers the auto-persist. Kept Build + Reset since those are
         # one-shot commands, not state saves.
         btn_row = ttk.Frame(root)
-        btn_row.grid(row=6, column=0, sticky="we", pady=(PAD // 2, 0))
+        # row=7 (was row=6) — bumped along with nums_box because the
+        # base-model override box at row=5 added a new row above us.
+        btn_row.grid(row=7, column=0, sticky="we", pady=(PAD // 2, 0))
         ttk.Button(
             btn_row, text="Build prompt from picks ▶", style="Primary.TButton",
             command=self._on_build_from_picks,
