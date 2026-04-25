@@ -271,6 +271,39 @@ BUILDER_SUBJECT: dict[str, list[tuple[str, str]]] = {
         ("futanari (anime-style)", "1girl, futanari"),
         ("non-binary", "androgynous person, non-binary"),
     ],
+    # "Age range" — the highest-impact identity axis after gender.
+    # Pony has training data spanning all adult age ranges and the
+    # face structure / skin texture rendered varies wildly between
+    # them. Default `(any)` emits nothing so the LoRA / base decides.
+    "Age range": [
+        ("(any)", ""),
+        ("young 18-22", "young woman, early twenties"),
+        ("mid 20s", "mid 20s, young adult"),
+        ("late 20s", "late 20s"),
+        ("early 30s", "early 30s, mature young adult"),
+        ("mid 30s", "mid 30s, mature woman"),
+        ("late 30s / early 40s", "late 30s, MILF"),
+        ("40s", "in her 40s, mature woman"),
+        ("50+", "mature woman, 50s, older"),
+    ],
+    # "Ethnicity / heritage" — fundamental for non-default subjects.
+    # Pony / SDXL respond strongly to these tags. Default `(any)`
+    # leaves the model / LoRA to decide. Listed alphabetically
+    # except `(any)` first; no ordering implies preference.
+    "Ethnicity / heritage": [
+        ("(any)", ""),
+        ("african", "african descent, dark skin"),
+        ("asian (east)", "east asian, japanese / korean / chinese features"),
+        ("asian (south)", "south asian, indian features"),
+        ("asian (southeast)", "southeast asian, thai / vietnamese / filipino features"),
+        ("caucasian / european", "caucasian, european features"),
+        ("latina / hispanic", "latina, hispanic features"),
+        ("mediterranean", "mediterranean features, olive skin"),
+        ("middle eastern", "middle eastern features"),
+        ("mixed / biracial", "mixed race, biracial features"),
+        ("native american", "native american, indigenous features"),
+        ("pacific islander", "pacific islander features"),
+    ],
     "Hair colour": [
         ("(any)", ""),
         ("blonde", "long wavy blonde hair"),
@@ -299,6 +332,37 @@ BUILDER_SUBJECT: dict[str, list[tuple[str, str]]] = {
         ("short blonde", "short blonde hair, pixie cut"),
         ("short dark", "short dark hair, bob cut"),
         ("buzz cut", "buzz cut, very short hair"),
+    ],
+    # Hair length — independent of colour. Some "Hair colour" picks
+    # already imply a length (e.g. "short blonde" → pixie cut), so
+    # leave at `(any)` if you've picked a length-implying colour.
+    # Otherwise, this lets you say "blonde" + "very long" cleanly.
+    "Hair length": [
+        ("(any)", ""),
+        ("very short / pixie", "very short hair, pixie cut"),
+        ("short / bob", "short hair, bob length"),
+        ("shoulder length", "shoulder length hair"),
+        ("mid back", "mid-back length hair, long"),
+        ("very long", "very long hair, waist length"),
+        ("buzz / shaved", "buzzed hair, shaved short"),
+    ],
+    # Hair style — texture + arrangement. Orthogonal to length.
+    "Hair style": [
+        ("(any)", ""),
+        ("loose / down", "hair down, flowing"),
+        ("straight", "straight hair, sleek"),
+        ("wavy", "wavy hair, soft waves"),
+        ("curly", "curly hair, defined curls"),
+        ("messy / tousled", "messy hair, tousled, bedhead"),
+        ("ponytail", "hair in ponytail"),
+        ("high ponytail", "high ponytail, hair pulled up"),
+        ("braid", "hair in a braid"),
+        ("french braid", "french braid"),
+        ("bun", "hair in a bun"),
+        ("messy bun", "messy bun, casual updo"),
+        ("pigtails", "pigtails, twin tails"),
+        ("half-up", "half-up half-down hairstyle"),
+        ("slicked back", "slicked back hair, wet look"),
     ],
     "Eye colour": [
         ("(any)", ""),
@@ -348,6 +412,47 @@ BUILDER_SUBJECT: dict[str, list[tuple[str, str]]] = {
         ("heavy glam", "heavy makeup, smokey eye, bold lip"),
         ("red lipstick", "red lipstick, glamour makeup"),
         ("instagram filter", "instagram makeup, contoured, polished"),
+    ],
+    # Distinguishing features — the single most useful axis for
+    # "this looks like a real specific person" because it pins the
+    # face to detail the LoRA also encodes. Pick at most one — they
+    # combine awkwardly when stacked.
+    "Distinguishing features": [
+        ("(none)", ""),
+        ("freckles", "freckles across nose and cheeks"),
+        ("dimples", "dimples when smiling"),
+        ("beauty mark", "beauty mark on face, mole"),
+        ("mole on cheek", "mole on cheek"),
+        ("birthmark", "small birthmark on face"),
+        ("scar", "subtle scar on face"),
+        ("gap teeth", "slight gap between front teeth"),
+        ("freckled body", "freckles on body and shoulders"),
+    ],
+    # Glasses — visible accessory; default `(none)` emits nothing.
+    "Glasses": [
+        ("(none)", ""),
+        ("clear glasses", "wearing glasses, clear lenses"),
+        ("rimless", "rimless glasses, minimal frame"),
+        ("wire-rim", "wire-rim glasses, thin metal frame"),
+        ("thick frame", "thick-framed glasses, bold black frame"),
+        ("cat-eye", "cat-eye glasses, retro frame"),
+        ("round / Lennon", "round glasses, John Lennon style"),
+        ("aviator sunglasses", "aviator sunglasses"),
+        ("wayfarer sunglasses", "wayfarer sunglasses"),
+        ("oversized sunglasses", "oversized sunglasses"),
+    ],
+    # Piercings — visible-only, since face/ear piercings change
+    # perceived identity. Body piercings (nipple etc.) are NSFW
+    # and live in Action / Outfit semantics, not here.
+    "Piercings": [
+        ("(none)", ""),
+        ("ear (single)", "single ear piercing"),
+        ("ear (multiple)", "multiple ear piercings, helix"),
+        ("nose stud", "nose stud, small nose piercing"),
+        ("septum", "septum piercing"),
+        ("lip ring", "lip ring piercing"),
+        ("eyebrow", "eyebrow piercing"),
+        ("multiple face", "multiple face piercings, edgy"),
     ],
 }
 
@@ -1749,28 +1854,29 @@ class _GenerateState:
         group_key: str,
         include_tattoos: bool = False,
     ) -> None:
-        """Render a dropdown group as a 2-column grid of label+combobox pairs.
+        """Render a dropdown group as a single column of stacked rows.
 
-        Two pairs per row keeps every combobox wide enough to read its
-        longest option label without clipping (the third-column 3-col
-        layout that was here briefly clipped the rightmost combobox on
-        narrower windows, hiding axes like 'Sex act' entirely).
+        One axis per row, full-width combobox to the right of the
+        label. Rationale (per user explicit request): horizontally-
+        compact layouts (2 / 3 cols) clip the rightmost combobox on
+        any window narrower than the worst-case combo width, hiding
+        axes entirely. Single-column stacking guarantees every axis
+        is visible and every combobox is as wide as the form. The
+        ScrollableFrame above this handles vertical overflow.
 
-        Layout: columns are (label0, combo0, label1, combo1). Combo
-        columns get weight=1 + uniform group so they share leftover
-        horizontal space evenly and line up across rows.
+        Layout: column 0 = label (fixed width by content), column 1
+        = combobox (weight=1, fills remaining space).
         """
         PAD = gui_theme.PAD
-        COLS = 2
-        for c in range(COLS):
-            parent.columnconfigure(c * 2 + 1, weight=1, uniform="combo")
-        keys = list(options.keys())
-        for i, key in enumerate(keys):
-            r, c = divmod(i, COLS)
-            col_label = c * 2
-            col_combo = c * 2 + 1
+        # Combobox column absorbs all leftover horizontal space.
+        # Label column auto-sizes to its longest label (e.g.
+        # "Distinguishing features:"), no manual width tweaking.
+        parent.columnconfigure(0, weight=0)
+        parent.columnconfigure(1, weight=1)
+
+        for r, key in enumerate(options.keys()):
             ttk.Label(parent, text=f"{key}:").grid(
-                row=r, column=col_label, sticky="w", padx=(0, PAD // 2), pady=2,
+                row=r, column=0, sticky="w", padx=(0, PAD // 2), pady=2,
             )
             ttk.Combobox(
                 parent,
@@ -1778,18 +1884,18 @@ class _GenerateState:
                 values=[label for label, _ in options[key]],
                 state="readonly",
             ).grid(
-                row=r, column=col_combo, sticky="we",
-                padx=(0, PAD), pady=2,
+                row=r, column=1, sticky="we", padx=(0, 0), pady=2,
             )
 
         # Tattoos checkbox — only rendered for the Subject group.
+        # Sits below the last picker, spanning both grid columns.
         if include_tattoos:
-            next_row = (len(keys) + COLS - 1) // COLS
+            next_row = len(options)
             ttk.Checkbutton(
                 parent, text="Tattoos visible",
                 variable=self.builder_tattoos_var,
             ).grid(
-                row=next_row, column=0, columnspan=COLS * 2,
+                row=next_row, column=0, columnspan=2,
                 sticky="w", pady=(PAD // 2, 0),
             )
 
