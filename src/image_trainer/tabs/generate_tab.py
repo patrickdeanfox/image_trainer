@@ -504,9 +504,19 @@ BUILDER_SCENE: dict[str, list[tuple[str, str]]] = {
         ("eye level", "eye level shot, straight-on framing"),
         ("low angle", "low angle shot, looking up at subject"),
         ("high angle", "high angle shot, looking down at subject"),
-        ("medium shot", "medium shot, waist-up framing"),
-        ("full body", "full body shot, head to toe visible"),
+        ("medium shot", "medium shot, waist-up framing, half body"),
+        # Full body — beefed up. Pony heavily defaults to portrait
+        # framing because of training-set bias, so a single
+        # "full body shot" token isn't enough. We stack five
+        # reinforcing anchors and keep "feet visible" because Pony
+        # treats that as a strong "wide enough to include everything"
+        # anchor. Smart-negative also auto-injects anti-close-up
+        # tokens when "full body" appears in the prompt.
+        ("full body", "full body shot, head to toe visible, feet visible, "
+                      "entire body in frame, wide framing, distant shot, "
+                      "standing in center of frame"),
         ("close-up", "close-up shot, intimate framing, head and shoulders"),
+        ("portrait (head)", "head shot portrait, face only, tight framing"),
         ("over the shoulder", "over-the-shoulder shot, looking back"),
     ],
 }
@@ -2783,6 +2793,34 @@ class _GenerateState:
             adds.append("indoor, bedroom, studio, interior, closed room")
         elif any(a in b for a in indoor_anchors):
             adds.append("outdoor, landscape, exterior, sky, clouds, trees")
+
+        # ---- framing direction ----
+        # Pony / SDXL massively defaults to portrait / waist-up framings
+        # because that's what the bulk of training data was. When the
+        # user asks for full-body, the model needs explicit help to NOT
+        # render a face-prominent crop. Auto-inject anti-close-up tokens
+        # whenever a full-body anchor appears in the body.
+        full_body_anchors = (
+            "full body", "head to toe", "feet visible", "wide framing",
+            "entire body", "distant shot",
+        )
+        if any(a in b for a in full_body_anchors):
+            adds.append(
+                "close-up, portrait, head shot, head and shoulders, "
+                "bust shot, waist up, upper body, cropped, cropped body, "
+                "cropped legs, partial body, face only, tight framing"
+            )
+
+        # The reverse case: when the user explicitly asks for a portrait
+        # / close-up, push against accidentally rendering a wide shot
+        # — less of a problem than the previous direction but worth
+        # symmetry.
+        portrait_anchors = (
+            "head shot", "head and shoulders", "close-up shot",
+            "tight framing", "face only",
+        )
+        if any(a in b for a in portrait_anchors):
+            adds.append("full body, wide shot, distant subject, small in frame")
 
         # ---- tattoos opt-out ----
         # If the user did NOT explicitly include tattoos, push against any
